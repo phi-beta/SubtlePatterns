@@ -1,0 +1,24 @@
+# NOETRONIQ network overlay — a faithful re-implementation of the
+# 320x320 reference at noetroniq/website/html/assets/img/svg/pattern-network.svg,
+# upscaled and with deterministic output.
+width: 1600
+height: 900
+title: NOETRONIQ network overlay
+layers:
+  - family: grid
+    stroke: "#1d4d80"
+    stroke_opacity: 0.10
+    spacing: 40
+    thickness: 1
+    variant: double
+  - family: dot_grid
+    fill: "#d4af37"
+    fill_opacity: 0.55
+    spacing: 80
+    radius: 3
+  - family: diagonal_lines
+    stroke: "#8f211f"
+    stroke_opacity: 0.35
+    spacing: 160
+    thickness: 2
+    variant: ""

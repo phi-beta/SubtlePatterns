@@ -1,0 +1,26 @@
+# Topographic organic overlay — earth tones, layered topo lines + blobs + dust.
+width: 1600
+height: 900
+title: Topographic organic overlay
+layers:
+  - family: topographic
+    stroke: "#5a3e1b"
+    stroke_opacity: 0.18
+    levels: 12
+    amplitude: 60
+    frequency: 0.0035
+    thickness: 0.6
+  - family: organic_blobs
+    stroke: "#0d2f57"
+    stroke_opacity: 0.10
+    levels: 14
+    spacing: 90
+    amplitude: 18
+    frequency: 0.0012
+    variant: cubic
+  - family: particles
+    fill: "#d4af37"
+    fill_opacity: 0.20
+    levels: 80
+    radius: 0.8
+    variant: size_curve+field

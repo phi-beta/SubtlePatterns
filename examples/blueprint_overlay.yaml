@@ -1,0 +1,25 @@
+# Blueprint overlay — a technical / drafting aesthetic.
+# Layered grid + contour + circuit traces, in deep blue.
+width: 1600
+height: 900
+title: Blueprint overlay
+layers:
+  - family: grid
+    stroke: "#1d4d80"
+    stroke_opacity: 0.10
+    spacing: 32
+    thickness: 0.5
+    variant: double
+  - family: contour_lines
+    stroke: "#0d2f57"
+    stroke_opacity: 0.12
+    levels: 10
+    amplitude: 40
+    frequency: 0.005
+    thickness: 0.5
+  - family: circuit_traces
+    stroke: "#1d4d80"
+    stroke_opacity: 0.10
+    levels: 18
+    spacing: 16
+    amplitude: 24

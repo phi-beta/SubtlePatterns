@@ -1,0 +1,21 @@
+# Starlight dust — designed to overlay on a deep navy or near-black background.
+# Tiles: noise dust + clustered constellation.
+width: 1600
+height: 900
+title: Starlight dust
+layers:
+  - family: noise_field
+    fill: "#ffffff"
+    fill_opacity: 0.10
+    spacing: 6
+    radius: 0.5
+    frequency: 0.02
+    variant: fbm
+  - family: constellation
+    fill: "#ffffff"
+    fill_opacity: 0.30
+    stroke: "#ffffff"
+    stroke_opacity: 0.10
+    levels: 40
+    radius: 1.0
+    variant: clustered

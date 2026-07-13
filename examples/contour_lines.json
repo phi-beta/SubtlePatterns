@@ -1,0 +1,10 @@
+{
+  "family": "contour_lines",
+  "stroke": "#0d2f57",
+  "stroke_opacity": 0.20,
+  "levels": 14,
+  "amplitude": 55,
+  "frequency": 0.0045,
+  "thickness": 0.7,
+  "variant": "emphasis"
+}
