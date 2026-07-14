@@ -50,6 +50,53 @@ def test_write_gallery(tmp_path) -> None:
     assert os.path.getsize(path) > 100
 
 
+def test_gallery_samples_mode_includes_every_sample(tmp_path) -> None:
+    """Sample mode shows one tile per (label, svg, info) entry, in order."""
+    svgs = [
+        ("alpha", "<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900' viewBox='0 0 1600 900'><rect/></svg>", "first"),
+        ("beta",  "<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900' viewBox='0 0 1600 900'><circle/></svg>", "second"),
+        ("gamma", "<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900' viewBox='0 0 1600 900'><path/></svg>", "third"),
+    ]
+    html = gallery_html(samples=svgs, columns=2, title="sample-mode-test")
+    # All three labels present.
+    for label, _, _ in svgs:
+        assert label in html
+    # Tile count matches.
+    assert html.count('class="tile"') == 3
+    # The XML prolog is stripped from inlined SVGs.
+    assert "<?xml" not in html
+    # Tiles are in the order given.
+    pos_alpha = html.index("alpha")
+    pos_beta = html.index("beta")
+    pos_gamma = html.index("gamma")
+    assert pos_alpha < pos_beta < pos_gamma
+
+
+def test_gallery_samples_mode_resizes_svg_root() -> None:
+    """The inlined <svg> width/height is replaced with the tile size."""
+    samples = [("x", "<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900' viewBox='0 0 1600 900'><rect/></svg>", "")]
+    html = gallery_html(samples=samples, tile_size=(480, 270), columns=1, title="t")
+    # The original 1600/900 are gone, replaced with 480/270.
+    assert 'width="1600"' not in html
+    assert 'height="900"' not in html
+    assert 'width="480"' in html
+    assert 'height="270"' in html
+
+
+def test_gallery_samples_mode_ignores_presets() -> None:
+    """When samples is given, presets are ignored (no preset re-render)."""
+    samples = [("only-sample", "<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900' viewBox='0 0 1600 900'/>", "")]
+    html = gallery_html(
+        samples=samples,
+        presets=["hex_mesh"],  # this should be ignored
+        title="t",
+    )
+    # Only the sample label appears; the preset name does not.
+    assert "only-sample" in html
+    assert "hex_mesh" not in html
+    assert html.count('class="tile"') == 1
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------

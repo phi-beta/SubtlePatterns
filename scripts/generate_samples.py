@@ -116,10 +116,109 @@ def make_samples():
             lambda: render_overlay("twisted_ribbon", size=(1600, 900), seed=42),
             "Hex mesh + constellation twisted around the layer's vertical centre.",
         ),
+        # 15. Dome horizon (sphere + topographic)
         (
             "15-dome-horizon.svg",
             lambda: render_overlay("dome_horizon", size=(1600, 900), seed=42),
             "Topographic noise + particles projected onto a sphere.",
+        ),
+        # 16-24. Per-warp showcases — one tile per warp kind, with
+        # enough strength that the effect is unmistakable. Where a
+        # preset name doesn't fit, we build the layer config inline.
+        (
+            "16-tilt-x.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.25,
+                 "spacing": 40, "thickness": 0.8, "warp": "tilt_x", "warp_strength": 0.6},
+                size=(1600, 900), seed=42,
+            ),
+            "Pure tilt_x: grid tipped around a horizontal axis (one-axis perspective).",
+        ),
+        (
+            "17-tilt-y.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.25,
+                 "spacing": 40, "thickness": 0.8, "warp": "tilt_y", "warp_strength": 0.6},
+                size=(1600, 900), seed=42,
+            ),
+            "Pure tilt_y: grid tipped around a vertical axis (one-axis perspective).",
+        ),
+        (
+            "18-cylindrical-vertical.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.25,
+                 "spacing": 40, "thickness": 0.8,
+                 "warp": "cylinder_v", "warp_strength": 0.6},
+                size=(1600, 900), seed=42,
+            ),
+            "Grid wrapped around a vertical cylinder (cylinder_v warp).",
+        ),
+        (
+            "19-scale-h.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.25,
+                 "spacing": 40, "thickness": 0.8, "warp": "scale_h", "warp_strength": 0.7},
+                size=(1600, 900), seed=42,
+            ),
+            "Horizontal squash (scale_h warp) — affine, like a wide-angle lens.",
+        ),
+        (
+            "20-shear-x.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.25,
+                 "spacing": 40, "thickness": 0.8, "warp": "shear_x", "warp_strength": 0.7},
+                size=(1600, 900), seed=42,
+            ),
+            "Pure horizontal shear (shear_x warp) — a parallelogram.",
+        ),
+        (
+            "21-tilted-contour.svg",
+            lambda: render_pattern(
+                {"family": "contour_lines", "stroke": "#0d2f57", "stroke_opacity": 0.20,
+                 "levels": 14, "amplitude": 60, "frequency": 0.004, "jitter": 0.35,
+                 "warp": "tilt_xy", "warp_strength": 0.5},
+                size=(1600, 900), seed=42,
+            ),
+            "Contour lines bent onto a 3-D perspective floor (tilt_xy on a non-grid pattern).",
+        ),
+        (
+            "22-gentle-twist.svg",
+            lambda: render_pattern(
+                {"family": "hex_mesh", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+                 "spacing": 40, "thickness": 0.6, "warp": "twist", "warp_strength": 0.25},
+                size=(1600, 900), seed=42,
+            ),
+            "Gentle twist (warp_strength=0.25) — subtle, not yet a full screw.",
+        ),
+        (
+            "23-strong-sphere.svg",
+            lambda: render_pattern(
+                {"family": "noise_field", "fill": "#d4af37", "fill_opacity": 0.15,
+                 "spacing": 18, "radius": 0.5, "frequency": 0.02, "variant": "fbm",
+                 "warp": "sphere", "warp_strength": 0.85},
+                size=(1600, 900), seed=42,
+            ),
+            "Strong sphere (warp_strength=0.85) — a clear planetary bulge.",
+        ),
+        (
+            "24-stacked-warps.svg",
+            lambda: render_overlay(
+                {"layers": [
+                    # Bottom: faint noise dust on a sphere — the "horizon".
+                    {"family": "noise_field", "fill": "#d4af37", "fill_opacity": 0.10,
+                     "spacing": 22, "radius": 0.5, "frequency": 0.02, "variant": "fbm",
+                     "warp": "sphere", "warp_strength": 0.5},
+                    # Middle: a grid tilted on a different plane.
+                    {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+                     "spacing": 60, "thickness": 0.6,
+                     "warp": "tilt_xy", "warp_strength": 0.45},
+                    # Top: flat (no warp) — sits on the viewer's plane.
+                    {"family": "dot_grid", "fill": "#ffffff", "fill_opacity": 0.20,
+                     "spacing": 80, "radius": 1.2},
+                ], "width": 1600, "height": 900},
+                seed=42,
+            ),
+            "Three layers, three different warps: sphere, tilt_xy, and none — different surfaces stacked in one overlay.",
         ),
     ]
 
@@ -129,8 +228,10 @@ def main() -> int:
     print(f"Writing samples to: {SAMPLES_DIR}")
     print()
 
+    samples = make_samples()
+    rendered: list[tuple[str, str, str]] = []  # (label, svg, info) for preview.html
     total = 0
-    for filename, fn, desc in make_samples():
+    for filename, fn, desc in samples:
         t0 = time.time()
         svg = fn()
         dt = time.time() - t0
@@ -142,23 +243,31 @@ def main() -> int:
         size = len(svg)
         total += size
         print(f"  {filename:35}  {size:>7,} bytes  {dt*1000:6.1f}ms  {desc}")
+        # The label is the filename without the leading "NN-" and the
+        # trailing ".svg" (e.g. "01-noetroniq-network.svg" -> "noetroniq-network").
+        # We keep the dash form because that's the natural identifier.
+        label = filename.split("-", 1)[1].rsplit(".svg", 1)[0]
+        rendered.append((label, svg, desc))
 
-    # Gallery
+    # Gallery — built from the *samples* we just rendered, so every
+    # *.svg file in examples/samples/ has a corresponding tile in the
+    # gallery, and nothing else. The tile SVGs are the inlined full-size
+    # SVGs, resized to the tile dimensions by the gallery.
     gallery_path = os.path.join(SAMPLES_DIR, "preview.html")
     html = gallery_html(
-        presets=list_presets(),
+        samples=rendered,
         backdrop="linear-gradient(135deg,#001f3f,#0d2f57)",
         tile_size=(480, 270),
         seed=42,
         columns=2,
-        title="SubtlePatterns — sample gallery (built-in presets)",
+        title=f"SubtlePatterns — {len(rendered)} curated samples",
     )
     with open(gallery_path, "w", encoding="utf-8") as fh:
         fh.write(html)
     print()
-    print(f"  {'preview.html':35}  {len(html):>7,} bytes  full preset gallery")
+    print(f"  {'preview.html':35}  {len(html):>7,} bytes  full sample gallery")
     print()
-    print(f"Total SVG payload: {total:,} bytes  ({(total / 1024):.1f} KB) across {len(make_samples())} samples")
+    print(f"Total SVG payload: {total:,} bytes  ({(total / 1024):.1f} KB) across {len(samples)} samples")
     return 0
 
 
