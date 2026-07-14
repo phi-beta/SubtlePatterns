@@ -8,6 +8,8 @@ There are **17 pattern families**. Each accepts a `family` string and an optiona
 
 The variant lists below are the ones exercised by the test suite (`tests/test_patterns.py::test_variant_renders`); other strings are accepted but not documented.
 
+In addition, every pattern supports a layer-level **spatial warp** that bends the pattern onto a non-flat surface — see [Spatial warps](#spatial-warps) below.
+
 ### Conventions
 
 * All sizes are in **user units** (no `px` suffix in the SVG output; the SVG is scalable).
@@ -187,6 +189,8 @@ Variants: `""` (Perlin), `fbm`, `turbulence` (absolute-value Perlin for ridges).
 | `seed`          | int     | 0          | any             | Per-pattern seed override |
 | `blend_mode`    | BlendMode| NORMAL    | 15 modes        | `mix-blend-mode` for the layer |
 | `curve_segments`| int     | 32         | 2..512          | Cubic Bezier sampling resolution |
+| `warp`          | WarpKind| `"none"`   | 12 kinds        | Spatial warp applied to the layer (see below) |
+| `warp_strength` | float   | 0.3        | 0..1            | Warp amplitude (0 = identity) |
 
 ## Overlay parameters
 
@@ -207,9 +211,55 @@ Variants: `""` (Perlin), `fbm`, `turbulence` (absolute-value Perlin for ridges).
 
 Blend modes are applied per layer via `style="mix-blend-mode: …"` on the layer's `<g>`.
 
+## Spatial warps
+
+A *warp* bends a pattern layer onto a non-flat surface so the same flat-XY pattern can read as if it were projected onto a tilted plane, wrapped around a cylinder, rippled like water, twisted like a screw, or projected onto a sphere.
+
+* **Affine** warps (`tilt_x`, `tilt_y`, `tilt_xy`, `scale_h`, `scale_v`, `shear_x`, `shear_y`) emit a single `<g transform="matrix(...)">`. They are zero-overhead and deterministic.
+* **Non-affine** warps (`cylinder_h`, `cylinder_v`, `sphere`, `ripple`, `twist`) emit a single `<defs>` block per warp with a `<filter>` containing `<feTurbulence>` and `<feDisplacementMap>`. The layer's `<g>` references it via `filter="url(#sp-warp-...)"`. This is the standard SVG idiom for non-affine spatial warps and is supported in every modern browser.
+
+`warp_strength` is in `[0, 1]`. `0` is the identity (no transform emitted). `1` is a strong, easily visible warp.
+
+| Warp           | Kind          | Looks like                                       |
+|----------------|---------------|--------------------------------------------------|
+| `none`         | identity      | No change                                        |
+| `tilt_x`       | affine        | Pattern tipped around a horizontal axis          |
+| `tilt_y`       | affine        | Pattern tipped around a vertical axis            |
+| `tilt_xy`      | affine        | 3-D "perspective floor" combined tilt            |
+| `scale_h`      | affine        | Horizontal squash (1 = half-width)               |
+| `scale_v`      | affine        | Vertical squash (1 = half-height)                |
+| `shear_x`      | affine        | Horizontal shear (parallelogram)                 |
+| `shear_y`      | affine        | Vertical shear (parallelogram)                   |
+| `cylinder_h`   | non-affine    | Wrapped around a horizontal cylinder             |
+| `cylinder_v`   | non-affine    | Wrapped around a vertical cylinder               |
+| `sphere`       | non-affine    | Projected onto a sphere (fish-eye / dome)        |
+| `ripple`       | non-affine    | Sinusoidal wave displacement                     |
+| `twist`        | non-affine    | Rotation around centre, increasing with distance |
+
+Example — a 2-layer overlay where the grid is bent onto a perspective floor and the dot grid is not:
+
+```yaml
+layers:
+  - family: grid
+    stroke: "#1d4d80"
+    stroke_opacity: 0.18
+    spacing: 60
+    warp: tilt_xy
+    warp_strength: 0.6
+  - family: dot_grid
+    fill: "#d4af37"
+    fill_opacity: 0.30
+    spacing: 120
+    radius: 1.6
+    # no warp: stays on the unwarped plane
+```
+
+Five presets exercise the warps: `tilted_grid`, `cylindrical_blueprint`, `ripple_field`, `twisted_ribbon`, `dome_horizon`.
+
 ## Built-in presets
 
 Run `subtle-patterns list-presets` for the full list. Twenty are shipped:
 
 * **Patterns** (14): `blueprint`, `circuit_traces`, `constellation`, `contour_lines`, `dot_grid`, `fractal_silhouette`, `hex_mesh`, `noise_field`, `organic_blobs`, `scanlines`, `topographic`, `triangular_mesh`, `voronoi`, `wave_field`
 * **Overlays** (6): `blueprint_overlay`, `hex_constellation`, `minimal_lines`, `noetroniq_network`, `starlight_dust`, `topographic_organic`
+* **Warped overlays** (5): `tilted_grid` (perspective floor), `cylindrical_blueprint` (around a horizontal cylinder), `ripple_field` (sinusoidal wave), `twisted_ribbon` (screw-like twist), `dome_horizon` (projected onto a sphere)

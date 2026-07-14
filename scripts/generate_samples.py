@@ -1,4 +1,4 @@
-"""Generate 10 sample SVGs + a preview.html gallery.
+"""Generate sample SVGs + a preview.html gallery.
 
 Run as a script (not part of the package):
 
@@ -91,6 +91,36 @@ def make_samples():
             lambda: render_pattern("voronoi", size=(1600, 900), seed=42),
             "Voronoi diagram with Lloyd-relaxed seeds for uniform cell sizes.",
         ),
+        # 11-15. Warped overlays — show off the spatial-warp system
+        # (tilt, cylinder, ripple, twist, sphere). Each uses the same
+        # families as the unwarped presets but bends them onto a
+        # non-flat surface via layer-level <g transform="..."> or
+        # <filter> wrapping.
+        (
+            "11-tilted-grid.svg",
+            lambda: render_overlay("tilted_grid", size=(1600, 900), seed=42),
+            "Perspective floor: grid + dot_grid, both wrapped with tilt_xy.",
+        ),
+        (
+            "12-cylindrical-blueprint.svg",
+            lambda: render_overlay("cylindrical_blueprint", size=(1600, 900), seed=42),
+            "Grid + circuit traces wrapped around a horizontal cylinder.",
+        ),
+        (
+            "13-ripple-field.svg",
+            lambda: render_overlay("ripple_field", size=(1600, 900), seed=42),
+            "Wave field + flat dot grid; the field is sinusoidal-rippled.",
+        ),
+        (
+            "14-twisted-ribbon.svg",
+            lambda: render_overlay("twisted_ribbon", size=(1600, 900), seed=42),
+            "Hex mesh + constellation twisted around the layer's vertical centre.",
+        ),
+        (
+            "15-dome-horizon.svg",
+            lambda: render_overlay("dome_horizon", size=(1600, 900), seed=42),
+            "Topographic noise + particles projected onto a sphere.",
+        ),
     ]
 
 
@@ -128,7 +158,7 @@ def main() -> int:
     print()
     print(f"  {'preview.html':35}  {len(html):>7,} bytes  full preset gallery")
     print()
-    print(f"Total SVG payload: {total:,} bytes  ({(total / 1024):.1f} KB) across 10 samples")
+    print(f"Total SVG payload: {total:,} bytes  ({(total / 1024):.1f} KB) across {len(make_samples())} samples")
     return 0
 
 

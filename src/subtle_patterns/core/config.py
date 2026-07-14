@@ -27,6 +27,8 @@ from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence, Tuple, Union
 
+from .warp import WarpKind
+
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -249,6 +251,8 @@ class PatternConfig:
     blend_mode: BlendMode = BlendMode.NORMAL
     curve_segments: int = 32
     variant: str = ""
+    warp: WarpKind = WarpKind.NONE
+    warp_strength: float = 0.3
 
     # ---- Validation ------------------------------------------------------
 
@@ -285,6 +289,13 @@ class PatternConfig:
             )
         if not isinstance(self.variant, str):
             raise TypeError("variant must be a string")
+        if isinstance(self.warp, str) and not isinstance(self.warp, WarpKind):
+            self.warp = WarpKind(self.warp)
+        elif not isinstance(self.warp, WarpKind):
+            raise TypeError(
+                f"warp must be a WarpKind or string, got {type(self.warp).__name__}"
+            )
+        self.warp_strength = _clamp("warp_strength", self.warp_strength, 0.0, 1.0)
         if not (self.stroke != "none" or self.fill != "none"):
             # Patterns with neither stroke nor fill produce no visible output.
             # We allow it (the user may be compositing via blend modes) but
@@ -323,6 +334,8 @@ class PatternConfig:
             "seed": int,
             "curve_segments": int,
             "blend_mode": str,
+            "warp": str,
+            "warp_strength": float,
         }
         kwargs: dict[str, Any] = {}
         for k, v in data.items():
@@ -347,6 +360,8 @@ class PatternConfig:
             if isinstance(v, Color):
                 v = str(v)
             elif isinstance(v, BlendMode):
+                v = v.value
+            elif isinstance(v, WarpKind):
                 v = v.value
             out[f.name] = v
         return out

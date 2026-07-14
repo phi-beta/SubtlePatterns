@@ -281,3 +281,101 @@ register_preset("minimal_lines", {
         {"family": "cross_hatch", "stroke": "#0d2f57", "stroke_opacity": 0.06, "spacing": 120, "thickness": 0.4, "variant": "triple"},
     ],
 })
+
+# ---------------------------------------------------------------------------
+# Warped overlays
+# ---------------------------------------------------------------------------
+#
+# These show off the spatial-warp system. Each preset takes a familiar
+# pattern and bends it onto a non-flat surface: a tilted floor, a
+# horizontal cylinder, a rippling water surface, a twisted ribbon, or a
+# spherical dome. The warp is layer-level, so a single preset can mix
+# warped and unwarped layers (useful for layering a warped noise field
+# under an unwarped grid).
+#
+# `warp_strength` defaults to 0.3 in PatternConfig; the presets below
+# override it because they're meant to demonstrate the warps, not hide
+# them.
+
+register_preset("tilted_grid", {
+    "width": 1600,
+    "height": 900,
+    "title": "Tilted perspective grid",
+    "layers": [
+        # Heavy grid pushed back with a tilt_xy warp — gives a clear
+        # "perspective floor" look without resorting to 3-D math.
+        {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+         "spacing": 60, "thickness": 0.8, "warp": "tilt_xy", "warp_strength": 0.6},
+        # Sparse dots overlaid on the same plane (same warp) read as
+        # perspective markers receding into the distance.
+        {"family": "dot_grid", "fill": "#d4af37", "fill_opacity": 0.30,
+         "spacing": 120, "radius": 1.6, "warp": "tilt_xy", "warp_strength": 0.6},
+    ],
+})
+
+register_preset("cylindrical_blueprint", {
+    "width": 1600,
+    "height": 900,
+    "title": "Cylindrical blueprint overlay",
+    "layers": [
+        # Grid wrapped around a horizontal cylinder. Lines at the top
+        # and bottom stay straight; lines near the centre compress,
+        # making the centre look closer to the viewer.
+        {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.20,
+         "spacing": 50, "thickness": 0.6, "warp": "cylinder_h", "warp_strength": 0.45},
+        # Light circuit traces wrapped the same way for depth.
+        {"family": "circuit_traces", "stroke": "#d4af37", "stroke_opacity": 0.10,
+         "levels": 14, "spacing": 18, "amplitude": 22, "warp": "cylinder_h", "warp_strength": 0.45},
+    ],
+})
+
+register_preset("ripple_field", {
+    "width": 1600,
+    "height": 900,
+    "title": "Rippling wave field",
+    "layers": [
+        # A dense wave field, rippled like the surface of a pond. The
+        # `ripple` warp displaces every x in the layer sinusoidally.
+        {"family": "wave_field", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+         "spacing": 12, "amplitude": 18, "frequency": 0.012,
+         "warp": "ripple", "warp_strength": 0.5},
+        # A faint dot grid floating above, not warped — gives a sense
+        # of the unwarped plane for contrast.
+        {"family": "dot_grid", "fill": "#d4af37", "fill_opacity": 0.15,
+         "spacing": 80, "radius": 1.0},
+    ],
+})
+
+register_preset("twisted_ribbon", {
+    "width": 1600,
+    "height": 900,
+    "title": "Twisted ribbon overlay",
+    "layers": [
+        # A hex mesh twisted around the layer's vertical centre. The
+        # hexes near the top and bottom keep their orientation; the
+        # ones in the middle rotate the most, creating a 3-D
+        # screw-like ribbon.
+        {"family": "hex_mesh", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+         "spacing": 40, "thickness": 0.6, "warp": "twist", "warp_strength": 0.5},
+        # A subtle constellation follows the same twist.
+        {"family": "constellation", "fill": "#d4af37", "fill_opacity": 0.25,
+         "stroke": "#d4af37", "stroke_opacity": 0.10,
+         "levels": 30, "radius": 1.2, "warp": "twist", "warp_strength": 0.5},
+    ],
+})
+
+register_preset("dome_horizon", {
+    "width": 1600,
+    "height": 900,
+    "title": "Dome horizon overlay",
+    "layers": [
+        # A topographic noise field projected onto a sphere — reads
+        # as a horizon curving over a planetary surface.
+        {"family": "topographic", "stroke": "#5a3e1b", "stroke_opacity": 0.20,
+         "levels": 12, "amplitude": 60, "frequency": 0.0035, "thickness": 0.6,
+         "warp": "sphere", "warp_strength": 0.5},
+        # A few faint gold points to mark the curvature.
+        {"family": "particles", "fill": "#d4af37", "fill_opacity": 0.18,
+         "levels": 60, "radius": 1.0, "warp": "sphere", "warp_strength": 0.5},
+    ],
+})

@@ -16,7 +16,8 @@
 
 ## Highlights
 
-- **17 pattern families, 30+ built-in variants** — grid, dot grid, diagonal lines, cross-hatch, scanlines, circuit traces, hex mesh, triangular mesh, wave fields, contour lines, topographic isolines, Voronoi, organic blobs, particle constellations, fractals, noise field.
+- **17 pattern families, 25 built-in presets** — grid, dot grid, diagonal lines, cross-hatch, scanlines, circuit traces, hex mesh, triangular mesh, wave fields, contour lines, topographic isolines, Voronoi, organic blobs, particle constellations, fractals, noise field.
+- **12 spatial warps** — tilt, scale, shear, cylindrical, spherical, ripple, twist. Every layer can be bent onto a non-flat surface: tilted floor, wrapped around a cylinder, projected onto a dome, rippled like water, or twisted like a screw. Affine warps emit a single `<g transform>`; non-affine warps use SVG `<filter><feDisplacementMap/></filter>`, the standard idiom for non-affine spatial warps.
 - **Deterministic** — every pattern is fully reproducible from a config and a seed. Re-rendering the same config produces byte-identical SVG.
 - **Rich configuration** — patterns accept colour, opacity, density, scale, jitter, stroke, fill, curvature, depth, blend mode, and layer-specific options. Configs are loadable from **Python dicts, JSON, or YAML**.
 - **Composable** — multiple patterns can be layered into a single SVG with per-layer blend modes, opacity, and z-order.
