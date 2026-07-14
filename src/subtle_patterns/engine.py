@@ -201,6 +201,7 @@ def render_overlay(
             width=cfg.width,
             height=cfg.height,
             strength=layer_cfg.warp_strength,
+            options=layer_cfg.warp_options or None,
         )
         if warp_spec.transform:
             layer_attrs["transform"] = warp_spec.transform

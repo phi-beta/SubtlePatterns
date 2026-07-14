@@ -129,7 +129,8 @@ class TestComputeWarp:
         bytes, every warp will render identically in the browser.
         """
         kinds = [WarpKind.RIPPLE, WarpKind.TWIST, WarpKind.SPHERE,
-                 WarpKind.CYLINDER_H, WarpKind.CYLINDER_V]
+                 WarpKind.CYLINDER_H, WarpKind.CYLINDER_V,
+                 WarpKind.DEPTH, WarpKind.WAVE_2D]
         defs = {k: compute_warp(k, width=800, height=600, strength=0.5).filter_defs
                 for k in kinds}
         for a in kinds:
@@ -273,6 +274,7 @@ class TestNonAffinePngs:
         from subtle_patterns.core.warp import (
             _ripple_png, _twist_png, _sphere_png,
             _cylinder_h_png, _cylinder_v_png,
+            _depth_png, _wave_2d_png,
         )
         for png_name, png_bytes in [
             ("ripple", _ripple_png()),
@@ -280,6 +282,8 @@ class TestNonAffinePngs:
             ("sphere", _sphere_png()),
             ("cylinder_h", _cylinder_h_png()),
             ("cylinder_v", _cylinder_v_png()),
+            ("depth", _depth_png()),
+            ("wave_2d", _wave_2d_png()),
         ]:
             data = png_bytes[8:]
             width = height = 0
@@ -300,6 +304,229 @@ class TestNonAffinePngs:
                 f"{png_name}: IDAT has {len(raw)} bytes, expected {expected} "
                 f"({height} rows × (1 filter byte + {row_bytes} RGBA bytes))"
             )
+
+
+# ---------------------------------------------------------------------------
+# DEPTH + WAVE_2D warps: structured options
+# ---------------------------------------------------------------------------
+
+class TestStructuredWarpOptions:
+    """The new DEPTH and WAVE_2D warps accept a mapping of structured
+    options that change the displacement field. These tests confirm
+    the options actually take effect.
+    """
+
+    def test_depth_default_vanishing_point(self):
+        """Default depth options: vanishing point at top centre (0.5, 0)."""
+        from subtle_patterns.core.warp import DEPTH_DEFAULTS
+        assert DEPTH_DEFAULTS == {"vp_x": 0.5, "vp_y": 0.0, "depth": 1.0}
+
+    def test_wave_2d_default_options(self):
+        """Default wave_2d options: pure 2-cycle sine in x."""
+        from subtle_patterns.core.warp import WAVE_2D_DEFAULTS
+        assert WAVE_2D_DEFAULTS == {
+            "freq_x": 2.0, "freq_y": 0.0, "phase": 0.0, "cross": 0.0,
+        }
+
+    def test_depth_different_vp_y_produces_different_defs(self):
+        a = compute_warp(WarpKind.DEPTH, width=800, height=600, strength=0.5,
+                         options={"vp_x": 0.5, "vp_y": 0.0, "depth": 1.0})
+        b = compute_warp(WarpKind.DEPTH, width=800, height=600, strength=0.5,
+                         options={"vp_x": 0.5, "vp_y": 0.5, "depth": 1.0})
+        assert a.filter_defs != b.filter_defs
+
+    def test_depth_different_depth_value_produces_different_defs(self):
+        a = compute_warp(WarpKind.DEPTH, width=800, height=600, strength=0.5,
+                         options={"vp_x": 0.5, "vp_y": 0.0, "depth": 0.5})
+        b = compute_warp(WarpKind.DEPTH, width=800, height=600, strength=0.5,
+                         options={"vp_x": 0.5, "vp_y": 0.0, "depth": 2.0})
+        assert a.filter_defs != b.filter_defs
+
+    def test_wave_2d_different_freq_y_produces_different_defs(self):
+        a = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 2, "freq_y": 0, "phase": 0, "cross": 0})
+        b = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 2, "freq_y": 1, "phase": 0, "cross": 0})
+        assert a.filter_defs != b.filter_defs
+
+    def test_wave_2d_different_cross_produces_different_defs(self):
+        a = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 2, "freq_y": 1, "phase": 0, "cross": 0})
+        b = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 2, "freq_y": 1, "phase": 0, "cross": 0.7})
+        assert a.filter_defs != b.filter_defs
+
+    def test_wave_2d_diagonal_matches_ripple_when_fy_zero(self):
+        """A wave_2d with freq_y=0, phase=0, cross=0 should produce the
+        same x-displacement as the dedicated ripple warp.
+        """
+        import struct
+        import zlib
+        from subtle_patterns.core.warp import _ripple_png, _wave_2d_png
+
+        def decode_r(png):
+            data = png[8:]
+            idat = bytearray()
+            w = h = 0
+            while data:
+                length = struct.unpack(">I", data[:4])[0]
+                typ = data[4:8]
+                chunk = data[8:8+length]
+                data = data[8+length+4:]
+                if typ == b"IHDR":
+                    w, h = struct.unpack(">II", chunk[:8])
+                elif typ == b"IDAT":
+                    idat.extend(chunk)
+            raw = zlib.decompress(bytes(idat))
+            # Extract R channel (every 4th byte, skipping filter byte per row)
+            r = []
+            for j in range(h):
+                row_start = j * (1 + w*4) + 1
+                for i in range(w):
+                    r.append(raw[row_start + i*4])
+            return r
+
+        r1 = decode_r(_ripple_png())
+        r2 = decode_r(_wave_2d_png(freq_x=2, freq_y=0, phase=0, cross=0))
+        # They use different PNG widths (64 vs 64) and number of rows
+        # (1 vs 64). The R-channel data, when unrolled, should differ
+        # because wave_2d has 64 rows vs ripple's 1, but the *first*
+        # row should be the same 64-sample sine ramp.
+        assert r2[:64] == r1, "wave_2d with freq_y=0 should match ripple in row 0"
+
+    def test_unknown_options_are_ignored(self):
+        """Unknown warp_options keys are ignored (forward compat)."""
+        # Should not raise
+        compute_warp(
+            WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+            options={"freq_x": 2, "future_option": 42.0},
+        )
+
+    def test_partial_options_use_defaults_for_missing_keys(self):
+        """Specifying only one option leaves the others at defaults."""
+        # Just freq_x; the rest should default. Output should differ
+        # from a wave_2d with no options (which would also default).
+        a = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 3})
+        b = compute_warp(WarpKind.WAVE_2D, width=800, height=600, strength=0.5,
+                         options={"freq_x": 2})
+        assert a.filter_defs != b.filter_defs
+
+
+class TestWarpOptionsInConfig:
+    """The ``warp_options`` field on :class:`PatternConfig` is what
+    users actually configure. These tests cover validation and
+    end-to-end propagation through the engine.
+    """
+
+    def test_default_warp_options_is_empty_dict(self):
+        from subtle_patterns import PatternConfig
+        cfg = PatternConfig(family="grid", stroke="#1d4d80")
+        assert cfg.warp_options == {}
+
+    def test_invalid_warp_options_type_raises(self):
+        from subtle_patterns import PatternConfig
+        with pytest.raises(TypeError):
+            PatternConfig(family="grid", stroke="#1d4d80", warp_options="not a dict")
+
+    def test_non_numeric_warp_option_raises(self):
+        from subtle_patterns import PatternConfig
+        with pytest.raises(TypeError):
+            PatternConfig(
+                family="grid", stroke="#1d4d80",
+                warp={"warp": "depth", "freq_x": "lots"},
+            ) if False else PatternConfig(
+                family="grid", stroke="#1d4d80",
+                warp_options={"freq_x": "not a number"},
+            )
+
+    def test_boolean_warp_option_rejected(self):
+        """Booleans are int subclasses in Python; we explicitly reject
+        them so True/False typos surface as errors instead of
+        silently being coerced to 1.0/0.0.
+        """
+        from subtle_patterns import PatternConfig
+        with pytest.raises(TypeError):
+            PatternConfig(
+                family="grid", stroke="#1d4d80",
+                warp_options={"freq_x": True},
+            )
+
+    def test_numeric_warp_options_are_coerced_to_float(self):
+        from subtle_patterns import PatternConfig
+        cfg = PatternConfig(
+            family="grid", stroke="#1d4d80",
+            warp_options={"freq_x": 2, "freq_y": 1},  # ints
+        )
+        assert cfg.warp_options == {"freq_x": 2.0, "freq_y": 1.0}
+
+    def test_warp_options_round_trip_through_to_dict(self):
+        from subtle_patterns import PatternConfig
+        cfg = PatternConfig(
+            family="grid", stroke="#1d4d80",
+            warp="wave_2d", warp_strength=0.5,
+            warp_options={"freq_x": 2, "freq_y": 1, "phase": 0.25, "cross": 0.5},
+        )
+        d = cfg.to_dict()
+        assert d["warp_options"] == {"freq_x": 2.0, "freq_y": 1.0,
+                                     "phase": 0.25, "cross": 0.5}
+
+    def test_warp_options_round_trip_through_from_dict(self):
+        from subtle_patterns import PatternConfig
+        cfg = PatternConfig.from_dict({
+            "family": "grid", "stroke": "#1d4d80",
+            "warp": "wave_2d", "warp_strength": 0.5,
+            "warp_options": {"freq_x": 2, "freq_y": 1},
+        })
+        assert cfg.warp_options == {"freq_x": 2.0, "freq_y": 1.0}
+
+    def test_from_dict_rejects_non_dict_warp_options(self):
+        from subtle_patterns import PatternConfig
+        with pytest.raises(ValueError):
+            PatternConfig.from_dict({
+                "family": "grid", "stroke": "#1d4d80",
+                "warp_options": "not a dict",
+            })
+
+    def test_engine_uses_warp_options(self):
+        """End-to-end: the engine must pass warp_options through to
+        the warp. We render the same pattern with two different
+        options dicts and assert the SVG output differs.
+        """
+        from subtle_patterns import render_pattern
+        svg1 = render_pattern(
+            {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.4,
+             "spacing": 40, "thickness": 1,
+             "warp": "wave_2d", "warp_strength": 0.5,
+             "warp_options": {"freq_x": 2, "freq_y": 0, "phase": 0, "cross": 0}},
+            size=(800, 600), seed=42,
+        )
+        svg2 = render_pattern(
+            {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.4,
+             "spacing": 40, "thickness": 1,
+             "warp": "wave_2d", "warp_strength": 0.5,
+             "warp_options": {"freq_x": 2, "freq_y": 1, "phase": 0, "cross": 0}},
+            size=(800, 600), seed=42,
+        )
+        assert svg1 != svg2
+
+    def test_depth_options_affect_engine_output(self):
+        from subtle_patterns import render_pattern
+        a = render_pattern(
+            {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.4,
+             "spacing": 40, "thickness": 1,
+             "warp": "depth", "warp_strength": 0.5,
+             "warp_options": {"vp_x": 0.5, "vp_y": 0.0, "depth": 1.0}},
+            size=(800, 600), seed=42,
+        )
+        b = render_pattern(
+            {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.4,
+             "spacing": 40, "thickness": 1,
+             "warp": "depth", "warp_strength": 0.5,
+             "warp_options": {"vp_x": 0.2, "vp_y": 0.3, "depth": 1.5}},
+            size=(800, 600), seed=42,
+        )
+        assert a != b
 
 
 # ---------------------------------------------------------------------------

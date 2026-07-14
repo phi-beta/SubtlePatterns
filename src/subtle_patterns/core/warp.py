@@ -46,6 +46,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 from enum import Enum
+from typing import Mapping
 
 
 class WarpKind(str, Enum):
@@ -68,6 +69,16 @@ class WarpKind(str, Enum):
     * ``ripple`` — sinusoidal wave displacement in x.
     * ``twist`` — rotation about the layer centre, with the rotation
       angle increasing with distance from the centre.
+    * ``depth`` — 1-point perspective projection. The pattern recedes
+      toward a configurable vanishing point; horizontal lines
+      converge to the vanishing point as ``warp_strength`` increases.
+      Use ``warp_options`` to set ``vp_x`` and ``vp_y``.
+    * ``wave_2d`` — composable 2D sinusoidal waveform displacement
+      (planar wave distortion). ``dx = sin(2π(freq_x·x + phase)) +
+      cross·sin(2π(freq_x·x + freq_y·y))``, and the same shape for
+      ``dy``. Pure x-sine, pure y-sine, diagonal waves, and
+      interference patterns are all reachable through
+      ``warp_options``. See :data:`WAVE_2D_DEFAULTS`.
     """
 
     NONE = "none"
@@ -83,6 +94,8 @@ class WarpKind(str, Enum):
     SPHERE = "sphere"
     RIPPLE = "ripple"
     TWIST = "twist"
+    DEPTH = "depth"
+    WAVE_2D = "wave_2d"
 
 
 # Warps that can be expressed as a single affine matrix on the layer.
@@ -95,6 +108,35 @@ AFFINE_WARPS = frozenset({
     WarpKind.SHEAR_X,
     WarpKind.SHEAR_Y,
 })
+
+
+# Default options for warps that accept structured parameters.
+# Used by ``compute_warp`` when ``warp_options`` is missing keys,
+# and validated in :class:`PatternConfig` so users see clear errors
+# on bad input.
+#
+# ``DEPTH`` defaults: vanishing point at the top centre of the layer.
+# Set ``vp_x`` and ``vp_y`` in [0, 1] (normalised layer coords) to
+# move the vanishing point. The depth value scales the perspective
+# effect; ``strength`` then scales the displacement amplitude on top
+# of that.
+DEPTH_DEFAULTS = {
+    "vp_x": 0.5,
+    "vp_y": 0.0,
+    "depth": 1.0,
+}
+
+# ``WAVE_2D`` defaults: pure 2-cycle sine in x, no y component.
+# Set ``freq_x`` and ``freq_y`` to control cycles across each axis,
+# ``phase`` for a phase shift (0..1 in cycles), and ``cross`` to add
+# an interference term proportional to sin(2π·(freq_x·x + freq_y·y)).
+# All outputs are normalised to ±_DISP_AMP at peak.
+WAVE_2D_DEFAULTS = {
+    "freq_x": 2.0,
+    "freq_y": 0.0,
+    "phase": 0.0,
+    "cross": 0.0,
+}
 
 
 @dataclass(frozen=True)
@@ -411,15 +453,147 @@ def _twist_png(width: int = 32, height: int = 32) -> bytes:
     return _make_png_rgba(width, height, bytes(rgba))
 
 
+def _depth_png(
+    width: int = 64,
+    height: int = 64,
+    *,
+    vp_x: float = 0.5,
+    vp_y: float = 0.0,
+    depth: float = 1.0,
+) -> bytes:
+    """1-point perspective displacement field.
+
+    A vanishing point at ``(vp_x, vp_y)`` in normalised layer
+    coordinates. For each pixel ``(xn, yn)`` in [0, 1]²:
+
+    * Compute the "depth" — how far the pixel is from the
+      vanishing-point row. We use ``|xn - vp_x| * (1 - yn)`` weighted
+      by ``depth`` to produce a horizontal scale that pulls every
+      column toward ``vp_x`` as ``yn`` decreases.
+    * The x-displacement is ``(vp_x - xn) * scale`` (so a pixel at
+      ``xn = 0`` with ``vp_x = 0.5`` gets pushed right; a pixel at
+      ``xn = 1`` gets pushed left). At ``yn = 0`` (the row containing
+      the vanishing point) the displacement is zero, so the
+      vanishing point itself doesn't move.
+    * The y-displacement is a small vertical squash that grows with
+      depth, so the pattern compresses as it recedes. Default
+      ``y_squash = 0.15`` — without it, the perspective is purely
+      horizontal and reads as a "convergence to a point" rather
+      than a recession into the distance.
+
+    The output is normalised to ±_DISP_AMP at peak so the same
+    feDisplacementMap ``scale`` formula works for all warps.
+    """
+    rgba = bytearray()
+    pixels = []
+    y_squash = 0.15
+    for j in range(height):
+        yn = j / max(height - 1, 1)
+        # scale grows as we move away from the vanishing-point row.
+        # At yn=0 (vanishing row), scale=0. At yn=1 (closest row),
+        # scale=depth (1.0 by default).
+        scale = depth * (yn - vp_y) if yn > vp_y else 0.0
+        for i in range(width):
+            xn = i / max(width - 1, 1)
+            dx = (vp_x - xn) * scale
+            # small y-squash: pull distant rows toward the vanishing-point row.
+            # yn=0 -> dy=0; yn=1 -> dy = -y_squash (toward the vanishing point)
+            dy = (vp_y - yn) * y_squash
+            pixels.append((dx, dy))
+    max_abs = max(max(abs(dx), abs(dy)) for dx, dy in pixels) or 1.0
+    for dx, dy in pixels:
+        r_chan = 0.5 + _DISP_AMP * dx / max_abs
+        g_chan = 0.5 + _DISP_AMP * dy / max_abs
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(width, height, bytes(rgba))
+
+
+def _wave_2d_png(
+    width: int = 64,
+    height: int = 64,
+    *,
+    freq_x: float = 2.0,
+    freq_y: float = 0.0,
+    phase: float = 0.0,
+    cross: float = 0.0,
+) -> bytes:
+    """Composable 2D sinusoidal waveform displacement.
+
+    For each pixel ``(xn, yn)`` in [0, 1]²:
+
+    .. code-block:: text
+
+        dx = sin(2π·(freq_x·xn + phase)) + cross · sin(2π·(freq_x·xn + freq_y·yn))
+        dy = sin(2π·(freq_y·yn + phase)) + cross · sin(2π·(freq_x·xn + freq_y·yn))
+
+    Defaults (freq_x=2, freq_y=0, phase=0, cross=0) produce a pure
+    2-cycle sine in x — the same effect as :func:`_ripple_png`, but
+    with the option to add a y-component, a phase shift, or an
+    interference term.
+
+    Useful combinations:
+
+    * Pure x-sine:    ``freq_x=2, freq_y=0, cross=0``
+    * Pure y-sine:    ``freq_x=0, freq_y=2, cross=0``
+    * Diagonal wave:  ``freq_x=2, freq_y=1, cross=0``
+    * Interference:   ``freq_x=2, freq_y=1, cross=0.5`` (adds a
+      diagonal checkerboard-like term)
+    """
+    rgba = bytearray()
+    pixels = []
+    for j in range(height):
+        yn = j / max(height - 1, 1)
+        for i in range(width):
+            xn = i / max(width - 1, 1)
+            # Normalise to ±1 so multi-axis terms don't blow up the
+            # dynamic range. Each component is bounded by 1 in magnitude.
+            dx = (
+                math.sin(2.0 * math.pi * (freq_x * xn + phase))
+                + cross * math.sin(2.0 * math.pi * (freq_x * xn + freq_y * yn))
+            )
+            dy = (
+                math.sin(2.0 * math.pi * (freq_y * yn + phase))
+                + cross * math.sin(2.0 * math.pi * (freq_x * xn + freq_y * yn))
+            )
+            pixels.append((dx, dy))
+    max_abs = max(max(abs(dx), abs(dy)) for dx, dy in pixels) or 1.0
+    for dx, dy in pixels:
+        r_chan = 0.5 + _DISP_AMP * dx / max_abs
+        g_chan = 0.5 + _DISP_AMP * dy / max_abs
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(width, height, bytes(rgba))
+
+
 # Maximum displacement in user units, used as the feDisplacementMap scale.
 # This is multiplied with the PNG channel value's deviation from 0.5
 # (max 0.45) to get the actual pixel shift in user units.
-def _filter_defs(kind: WarpKind, *, width: float, height: float, strength: float) -> tuple[str, str]:
+def _filter_defs(
+    kind: WarpKind,
+    *,
+    width: float,
+    height: float,
+    strength: float,
+    options: Mapping[str, float] | None = None,
+) -> tuple[str, str]:
     """Return ``(filter_id, filter_defs_string)`` for a non-affine warp.
 
     ``scale`` is the maximum displacement in user units at
     ``strength=1``. It's calibrated to the larger of width/height so
     the effect scales with the layer size.
+
+    ``options`` is an optional mapping of warp-specific parameters
+    (e.g. ``vp_x``/``vp_y``/``depth`` for :data:`WarpKind.DEPTH`, or
+    ``freq_x``/``freq_y``/``phase``/``cross`` for
+    :data:`WarpKind.WAVE_2D`). Missing keys fall back to the
+    ``*_DEFAULTS`` constants in this module.
     """
     fid = _safe_warp_id(kind)
     # Max displacement is 12% of the larger dimension, scaled by
@@ -437,6 +611,17 @@ def _filter_defs(kind: WarpKind, *, width: float, height: float, strength: float
         png = _cylinder_h_png()
     elif kind == WarpKind.CYLINDER_V:
         png = _cylinder_v_png()
+    elif kind == WarpKind.DEPTH:
+        opts = {**DEPTH_DEFAULTS, **(options or {})}
+        png = _depth_png(vp_x=opts["vp_x"], vp_y=opts["vp_y"], depth=opts["depth"])
+    elif kind == WarpKind.WAVE_2D:
+        opts = {**WAVE_2D_DEFAULTS, **(options or {})}
+        png = _wave_2d_png(
+            freq_x=opts["freq_x"],
+            freq_y=opts["freq_y"],
+            phase=opts["phase"],
+            cross=opts["cross"],
+        )
     else:
         raise ValueError(f"unsupported non-affine warp: {kind}")
 
@@ -467,10 +652,16 @@ def compute_warp(
     width: float,
     height: float,
     strength: float,
+    options: "Mapping[str, float] | None" = None,
 ) -> WarpSpec:
     """Resolve a warp request for a given layer size.
 
     Returns a :class:`WarpSpec` that the engine splices into the SVG output.
+
+    ``options`` is an optional mapping of warp-specific parameters.
+    See :data:`DEPTH_DEFAULTS` and :data:`WAVE_2D_DEFAULTS` for the
+    recognised keys. Unrecognised keys are ignored (so configs
+    from future versions remain forward-compatible).
     """
     if not isinstance(kind, WarpKind):
         raise TypeError(f"warp must be a WarpKind, got {type(kind).__name__}")
@@ -494,7 +685,9 @@ def compute_warp(
         }
         return WarpSpec(transform=builders[kind](width, height, strength))
 
-    fid, defs = _filter_defs(kind, width=width, height=height, strength=strength)
+    fid, defs = _filter_defs(
+        kind, width=width, height=height, strength=strength, options=options,
+    )
     return WarpSpec(filter_id=fid, filter_defs=defs)
 
 
@@ -502,5 +695,7 @@ __all__ = [
     "WarpKind",
     "WarpSpec",
     "AFFINE_WARPS",
+    "DEPTH_DEFAULTS",
+    "WAVE_2D_DEFAULTS",
     "compute_warp",
 ]

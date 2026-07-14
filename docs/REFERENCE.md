@@ -216,9 +216,9 @@ Blend modes are applied per layer via `style="mix-blend-mode: …"` on the layer
 A *warp* bends a pattern layer onto a non-flat surface so the same flat-XY pattern can read as if it were projected onto a tilted plane, wrapped around a cylinder, rippled like water, twisted like a screw, or projected onto a sphere.
 
 * **Affine** warps (`tilt_x`, `tilt_y`, `tilt_xy`, `scale_h`, `scale_v`, `shear_x`, `shear_y`) emit a single `<g transform="matrix(...)">`. The matrix is a true affine transform (real skew, non-uniform scaling, or real shear) so it visibly changes the pattern. Zero overhead, deterministic, and works in every renderer that supports SVG.
-* **Non-affine** warps (`cylinder_h`, `cylinder_v`, `sphere`, `ripple`, `twist`) emit a single `<defs>` block per warp with a `<filter>` containing a tiny precomputed displacement-map PNG as `<feImage>` + `<feDisplacementMap>`. The PNG is generated at render time from the analytic displacement field (sinusoidal ramp for ripple, parabolic for the cylinders, radial for sphere, rotation for twist) and embedded as a data: URL. The filter region is 150% of the layer so displaced pixels aren't clipped at the edges. This is the standard SVG idiom for non-affine warps and is supported in every modern browser.
+* **Non-affine** warps (`cylinder_h`, `cylinder_v`, `sphere`, `ripple`, `twist`, `depth`, `wave_2d`) emit a single `<defs>` block per warp with a `<filter>` containing a tiny precomputed displacement-map PNG as `<feImage>` + `<feDisplacementMap>`. The PNG is generated at render time from the analytic displacement field (sinusoidal ramp for ripple, parabolic for the cylinders, radial for sphere, rotation for twist, 1-point perspective for depth, composable 2D sine for wave_2d) and embedded as a data: URL. The filter region is 150% of the layer so displaced pixels aren't clipped at the edges. This is the standard SVG idiom for non-affine warps and is supported in every modern browser.
 
-`warp_strength` is in `[0, 1]`. `0` is the identity (no transform emitted). `1` is a strong, easily visible warp.
+`warp_strength` is in `[0, 1]`. `0` is the identity (no transform emitted). `1` is a strong, easily visible warp. The structured warps `depth` and `wave_2d` also accept a `warp_options` mapping for finer control (see below).
 
 | Warp           | Kind          | Math (sketch)                                                                 | Looks like                                       |
 |----------------|---------------|-------------------------------------------------------------------------------|--------------------------------------------------|
@@ -235,8 +235,63 @@ A *warp* bends a pattern layer onto a non-flat surface so the same flat-XY patte
 | `sphere`       | non-affine    | Radial bulge: outward push that increases toward the centre                   | Projected onto a sphere (fish-eye / dome)        |
 | `ripple`       | non-affine    | `dx = sin(2π·2·x)` sinusoidal ramp, scaled by `0.12·max(w,h)·s`               | Sinusoidal wave displacement                     |
 | `twist`        | non-affine    | Rotation by `y·π/2` about the centre, with smooth interpolation               | Rotation around centre, increasing with distance |
+| `depth`        | non-affine    | 1-point perspective toward `(vp_x, vp_y)`; `dx = (vp_x − x) · depth · max(0, y − vp_y)`, plus a small y-squash | True perspective projection (corridor) |
+| `wave_2d`      | non-affine    | `dx = sin(2π(freq_x·x + phase)) + cross·sin(2π(freq_x·x + freq_y·y))`; `dy` symmetric on `freq_y·y` | Composable planar 2D waveform (sine, diagonal, interference) |
 
 All non-affine warps use the same per-pixel scale formula: the maximum displacement in user units is `0.12·max(w, h)·s`, where `s` is `warp_strength`. With `s=0.5` on a 1600×900 layer, the peak displacement is `0.12·1600·0.5 = 96` user units — a clearly visible bend without pushing content off-canvas.
+
+## `warp_options` (structured parameters)
+
+The `depth` and `wave_2d` warps accept a `warp_options` mapping for fine control over the displacement field. Other warps ignore `warp_options` entirely (so it's safe to leave set on every layer).
+
+```yaml
+layers:
+  # depth: 1-point perspective with vanishing point at top-centre
+  - family: grid
+    warp: depth
+    warp_strength: 0.6
+    warp_options:
+      vp_x: 0.5       # vanishing-point x in [0, 1]
+      vp_y: 0.0       # vanishing-point y in [0, 1]
+      depth: 1.2      # how much horizontal compression; 0 = no effect
+
+  # wave_2d: composable 2D sine (diagonal + interference)
+  - family: wave_field
+    warp: wave_2d
+    warp_strength: 0.5
+    warp_options:
+      freq_x: 2.0     # cycles across width
+      freq_y: 1.0     # cycles across height
+      phase: 0.0      # phase shift in cycles
+      cross: 0.5      # interference term strength
+```
+
+**`depth` options** (defaults: `{vp_x: 0.5, vp_y: 0.0, depth: 1.0}`):
+
+| Key    | Type  | Range  | Default | Effect |
+|--------|-------|--------|---------|--------|
+| `vp_x` | float | 0..1   | 0.5     | Vanishing-point x (normalised layer coords) |
+| `vp_y` | float | 0..1   | 0.0     | Vanishing-point y; rows above this row have no displacement |
+| `depth`| float | 0..∞   | 1.0     | How much the rows below `vp_y` collapse toward the vanishing point |
+
+**`wave_2d` options** (defaults: `{freq_x: 2.0, freq_y: 0.0, phase: 0.0, cross: 0.0}`):
+
+| Key      | Type  | Range    | Default | Effect |
+|----------|-------|----------|---------|--------|
+| `freq_x` | float | 0..∞     | 2.0     | Cycles across the width (in x) |
+| `freq_y` | float | 0..∞     | 0.0     | Cycles across the height (in y) |
+| `phase`  | float | 0..1     | 0.0     | Phase shift in cycles |
+| `cross`  | float | 0..1     | 0.0     | Interference strength — adds `cross·sin(2π(freq_x·x + freq_y·y))` to both axes |
+
+**Useful `wave_2d` combinations:**
+
+* Pure x-sine: `{freq_x: 2, freq_y: 0, cross: 0}` — same as the `ripple` warp
+* Pure y-sine: `{freq_x: 0, freq_y: 2, cross: 0}`
+* Diagonal wave: `{freq_x: 2, freq_y: 1, cross: 0}`
+* Diagonal + interference: `{freq_x: 2, freq_y: 1, cross: 0.5}` — checkerboard-like nodes
+* Radial pulse: `{freq_x: 1.5, freq_y: 1.5, cross: 0.3}` — concentric ripples
+
+Unknown `warp_options` keys are silently ignored (forward-compatibility with future warps). Missing keys fall back to the defaults listed above.
 
 Example — a 2-layer overlay where the grid is bent onto a perspective floor and the dot grid is not:
 
@@ -256,7 +311,7 @@ layers:
     # no warp: stays on the unwarped plane
 ```
 
-Five presets exercise the warps: `tilted_grid`, `cylindrical_blueprint`, `ripple_field`, `twisted_ribbon`, `dome_horizon`. Samples 11–15 and 21–24 in `examples/samples/preview.html` showcase them on different pattern families.
+Nine presets exercise the warps: `tilted_grid`, `cylindrical_blueprint`, `ripple_field`, `twisted_ribbon`, `dome_horizon`, `vanishing_corridor`, `off_axis_perspective`, `diagonal_interference`, `radial_pulse`. Samples 11–30 in `examples/samples/preview.html` showcase them on different pattern families.
 
 ## Built-in presets
 

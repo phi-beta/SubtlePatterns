@@ -220,6 +220,54 @@ def make_samples():
             ),
             "Three layers, three different warps: sphere, tilt_xy, and none — different surfaces stacked in one overlay.",
         ),
+        # 25. Vanishing corridor (depth warp, 1-point perspective).
+        (
+            "25-vanishing-corridor.svg",
+            lambda: render_overlay("vanishing_corridor", size=(1600, 900), seed=42),
+            "Grid + dot grid receding toward a vanishing point at the top centre (depth warp).",
+        ),
+        # 26. Off-axis perspective (depth with custom vanishing point).
+        (
+            "26-off-axis-perspective.svg",
+            lambda: render_overlay("off_axis_perspective", size=(1600, 900), seed=42),
+            "Depth warp with the vanishing point at (0.2, 0.2) — perspective is asymmetric.",
+        ),
+        # 27. Diagonal interference (wave_2d with cross term).
+        (
+            "27-diagonal-interference.svg",
+            lambda: render_overlay("diagonal_interference", size=(1600, 900), seed=42),
+            "wave_field displaced by a 2D sine wave with a cross term — diagonal interference pattern.",
+        ),
+        # 28. Radial pulse (wave_2d with equal x and y frequencies).
+        (
+            "28-radial-pulse.svg",
+            lambda: render_overlay("radial_pulse", size=(1600, 900), seed=42),
+            "wave_field + constellation displaced by a radial 2D wave — concentric ripple effect.",
+        ),
+        # 29. Pure 2D wave on a single grid (formula demo, no layered pattern).
+        (
+            "29-pure-wave-2d.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.35,
+                 "spacing": 50, "thickness": 0.8,
+                 "warp": "wave_2d", "warp_strength": 0.7,
+                 "warp_options": {"freq_x": 3, "freq_y": 2, "phase": 0.25, "cross": 0.4}},
+                size=(1600, 900), seed=42,
+            ),
+            "Grid alone, displaced by a 2D sine wave (freq_x=3, freq_y=2, cross=0.4) — the cleanest demo of the wave_2d formula.",
+        ),
+        # 30. Pure depth on a single grid (formula demo).
+        (
+            "30-pure-depth.svg",
+            lambda: render_pattern(
+                {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.35,
+                 "spacing": 50, "thickness": 0.8,
+                 "warp": "depth", "warp_strength": 0.7,
+                 "warp_options": {"vp_x": 0.5, "vp_y": 0.0, "depth": 1.5}},
+                size=(1600, 900), seed=42,
+            ),
+            "Grid alone, displaced by depth (vanishing point at top centre, depth=1.5) — the cleanest demo of the perspective formula.",
+        ),
     ]
 
 

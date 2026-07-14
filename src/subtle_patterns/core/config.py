@@ -253,6 +253,11 @@ class PatternConfig:
     variant: str = ""
     warp: WarpKind = WarpKind.NONE
     warp_strength: float = 0.3
+    # Structured per-warp options (used by DEPTH and WAVE_2D). Empty
+    # dict means "use defaults" — the warp's own default-options table
+    # supplies the missing keys. Keys not relevant to the current
+    # ``warp`` are silently ignored.
+    warp_options: dict[str, float] = field(default_factory=dict)
 
     # ---- Validation ------------------------------------------------------
 
@@ -296,6 +301,25 @@ class PatternConfig:
                 f"warp must be a WarpKind or string, got {type(self.warp).__name__}"
             )
         self.warp_strength = _clamp("warp_strength", self.warp_strength, 0.0, 1.0)
+        if not isinstance(self.warp_options, dict):
+            raise TypeError(
+                f"warp_options must be a dict, got {type(self.warp_options).__name__}"
+            )
+        # Coerce numeric values to float; reject non-numeric keys explicitly so
+        # typos don't silently get ignored. Unknown keys are kept (the warp
+        # itself decides which keys to honour, and ignores the rest).
+        coerced: dict[str, float] = {}
+        for k, v in self.warp_options.items():
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"warp_options keys must be strings, got {type(k).__name__}"
+                )
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise TypeError(
+                    f"warp_options[{k!r}] must be a number, got {type(v).__name__}"
+                )
+            coerced[k] = float(v)
+        self.warp_options = coerced
         if not (self.stroke != "none" or self.fill != "none"):
             # Patterns with neither stroke nor fill produce no visible output.
             # We allow it (the user may be compositing via blend modes) but
@@ -336,11 +360,16 @@ class PatternConfig:
             "blend_mode": str,
             "warp": str,
             "warp_strength": float,
+            "warp_options": dict,
         }
         kwargs: dict[str, Any] = {}
         for k, v in data.items():
             if k not in known:
                 continue
+            if k == "warp_options" and not isinstance(v, dict):
+                raise ValueError(
+                    f"Config field {k!r} must be a dict, got {type(v).__name__}"
+                )
             if k in type_map and v is not None and not isinstance(v, type_map[k]):
                 try:
                     v = type_map[k](v)

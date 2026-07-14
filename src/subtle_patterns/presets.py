@@ -379,3 +379,100 @@ register_preset("dome_horizon", {
          "levels": 60, "radius": 1.0, "warp": "sphere", "warp_strength": 0.5},
     ],
 })
+
+
+# ---------------------------------------------------------------------------
+# Perspective + 2D waveform presets
+# ---------------------------------------------------------------------------
+
+
+register_preset("vanishing_corridor", {
+    "width": 1600,
+    "height": 900,
+    "title": "Vanishing corridor (depth warp, 1-point perspective)",
+    "layers": [
+        # Heavy grid receding toward a vanishing point at the top
+        # centre. Use the depth warp to add a true 1-point perspective
+        # — horizontal lines converge to the vanishing point as
+        # strength increases.
+        {"family": "grid", "stroke": "#1d4d80", "stroke_opacity": 0.20,
+         "spacing": 60, "thickness": 0.8,
+         "warp": "depth", "warp_strength": 0.6,
+         "warp_options": {"vp_x": 0.5, "vp_y": 0.0, "depth": 1.2}},
+        # Sparse gold dots follow the same perspective — they read
+        # as distance markers receding into the corridor.
+        {"family": "dot_grid", "fill": "#d4af37", "fill_opacity": 0.30,
+         "spacing": 120, "radius": 1.6,
+         "warp": "depth", "warp_strength": 0.6,
+         "warp_options": {"vp_x": 0.5, "vp_y": 0.0, "depth": 1.2}},
+    ],
+})
+
+
+register_preset("off_axis_perspective", {
+    "width": 1600,
+    "height": 900,
+    "title": "Off-axis perspective (depth with custom vanishing point)",
+    "layers": [
+        # Same depth warp, but the vanishing point is at (0.2, 0.2)
+        # — off-centre. The grid recedes toward the upper-left, so
+        # the perspective is no longer symmetric.
+        {"family": "grid", "stroke": "#5a3e1b", "stroke_opacity": 0.18,
+         "spacing": 50, "thickness": 0.6,
+         "warp": "depth", "warp_strength": 0.55,
+         "warp_options": {"vp_x": 0.2, "vp_y": 0.2, "depth": 1.0}},
+        # A topographic layer follows the same perspective, with
+        # amplitude reduced so the contour lines stay readable.
+        {"family": "topographic", "stroke": "#1d4d80", "stroke_opacity": 0.20,
+         "levels": 10, "amplitude": 40, "frequency": 0.005, "thickness": 0.5,
+         "warp": "depth", "warp_strength": 0.55,
+         "warp_options": {"vp_x": 0.2, "vp_y": 0.2, "depth": 1.0}},
+    ],
+})
+
+
+register_preset("diagonal_interference", {
+    "width": 1600,
+    "height": 900,
+    "title": "Diagonal interference (wave_2d with cross term)",
+    "layers": [
+        # Two-axis sine wave with a non-zero cross term — produces
+        # an interference pattern with peaks and nodes on a diagonal
+        # grid. The 2D wave displaces the wave-field layer in both
+        # x and y.
+        {"family": "wave_field", "stroke": "#1d4d80", "stroke_opacity": 0.20,
+         "spacing": 14, "amplitude": 18, "frequency": 0.012,
+         "warp": "wave_2d", "warp_strength": 0.5,
+         "warp_options": {"freq_x": 2, "freq_y": 1, "phase": 0, "cross": 0.5}},
+        # A flat dot grid (no warp) sits on top, providing a steady
+        # reference point against the moving field below.
+        {"family": "dot_grid", "fill": "#d4af37", "fill_opacity": 0.18,
+         "spacing": 110, "radius": 1.4},
+    ],
+})
+
+
+register_preset("radial_pulse", {
+    "width": 1600,
+    "height": 900,
+    "title": "Radial pulse (wave_2d with equal x and y frequencies)",
+    "layers": [
+        # freq_x == freq_y produces a radial wave pattern: the
+        # displacement is strongest along the diagonals, weakest
+        # along the axes. Combined with the wave_field pattern, this
+        # reads as concentric ripples emanating from the centre.
+        {"family": "wave_field", "stroke": "#1d4d80", "stroke_opacity": 0.18,
+         "spacing": 12, "amplitude": 20, "frequency": 0.014,
+         "warp": "wave_2d", "warp_strength": 0.6,
+         "warp_options": {"freq_x": 1.5, "freq_y": 1.5, "phase": 0.25, "cross": 0.3}},
+        # A constellation in gold sits on top, slightly out of phase
+        # with the field — the dots feel like they're drifting in
+        # the wave.
+        {"family": "constellation", "fill": "#d4af37", "fill_opacity": 0.22,
+         "stroke": "#d4af37", "stroke_opacity": 0.10,
+         "levels": 40, "radius": 1.2,
+         "warp": "wave_2d", "warp_strength": 0.4,
+         "warp_options": {"freq_x": 1.5, "freq_y": 1.5, "phase": 0.5, "cross": 0.3}},
+    ],
+})
+
