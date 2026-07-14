@@ -7,63 +7,67 @@ water, or twisted like a screw.
 
 Two implementation strategies are used depending on the warp:
 
-* **Affine** warps (single SVG ``transform="..."``): ``tilt_x``, ``tilt_y``,
-  ``tilt_xy``, ``scale_h``, ``scale_v``, ``shear_x``, ``shear_y``. These are
-  cheap (one attribute on a ``<g>``) and don't change the rendered
-  *density* of the pattern, just the shape of the canvas it lies on.
+* **Affine** warps (``tilt_x``, ``tilt_y``, ``tilt_xy``, ``scale_h``,
+  ``scale_v``, ``shear_x``, ``shear_y``) emit a single
+  ``<g transform="matrix(...)">``. The matrix is a true affine
+  transform that visibly changes the pattern (skew for the tilts,
+  non-uniform scaling anchored at one edge for the scales, real
+  shear for the shears).
 
-* **Non-affine** warps (SVG ``<filter>`` with ``<feDisplacementMap>``):
-  ``cylinder_h``, ``cylinder_v``, ``sphere``, ``ripple``, ``twist``.
-  ``feDisplacementMap`` is the standard SVG idiom for non-affine spatial
-  warps: it samples a small displacement map (also an SVG primitive) and
-  offsets each pixel of the source by the map's value at that point. We
-  build the displacement map procedurally from ``<feTurbulence>`` (for
-  noise-based warps like ``ripple``) or from analytic expressions via
-  ``<feFunc*`` (for the geometric warps).
+* **Non-affine** warps (``cylinder_h``, ``cylinder_v``, ``sphere``,
+  ``ripple``, ``twist``) emit a single ``<defs>`` block per warp
+  containing a ``<filter>`` that uses ``<feImage>`` (a tiny precomputed
+  PNG of the displacement field) + ``<feDisplacementMap>``. The
+  filter region is set to 150% of the layer so displaced pixels
+  aren't clipped at the edges. Each PNG is between 200 and 2000 bytes
+  base64-encoded.
 
-Why ``<filter>`` rather than piecewise-affine row slicing? The latter
-requires re-bucketing every drawn element by y-coordinate, which would
-force every pattern implementation to know about slices. A single
-``filter="url(#sp-warp-N)"`` on the layer's wrapping ``<g>`` keeps the
-pattern code unaware of warps, gives an *exact* (not approximated) warp,
-and the per-layer filter definitions are tiny (a handful of fe* elements
-shared across the layer).
+This module is pure math + string assembly: it builds the transform
+string (affine warps) or the filter ``defs`` string (non-affine
+warps). The engine splices the strings into the SVG output.
 
-This module produces two kinds of strings:
+Why not piecewise-affine row slicing for the non-affine warps? It would
+require every pattern implementation to know about slices (to bucket
+emitted elements by y). The ``<feImage>`` + ``<feDisplacementMap>``
+approach keeps pattern code unaware of warps, gives an exact (not
+approximated) result, and the per-warp defs are tiny.
 
-* ``wrap_transform`` for affine warps — drop directly into ``<g transform=...>``.
-* ``wrap_filter`` (id) plus a defs string for non-affine warps — the engine
-  emits the defs once per warped layer and references the filter from the
-  layer's ``<g filter=...>``.
-
-This module is pure math + string assembly. The engine splices the strings
-into the SVG output.
+Determinism: each warp's PNG is a pure function of ``(width, height,
+strength)``, so re-rendering the same config produces byte-identical
+SVG. The PNGs are computed at render time (not cached on disk) so the
+math stays in one place.
 """
 
 from __future__ import annotations
 
+import base64
 import math
+import struct
+import zlib
 from dataclasses import dataclass
 from enum import Enum
-from typing import Tuple
 
 
 class WarpKind(str, Enum):
     """The set of supported spatial warps.
 
     * ``none`` — identity, no transform applied.
-    * ``tilt_x`` — vertical-axis rotation (the pattern looks tipped
-      forward/backward around a horizontal axis). Affine.
-    * ``tilt_y`` — horizontal-axis rotation (tipped left/right). Affine.
+    * ``tilt_x`` — pattern tipped around a horizontal axis (skew:
+      top and bottom slide in opposite directions).
+    * ``tilt_y`` — pattern tipped around a vertical axis (skew:
+      left and right slide in opposite directions).
     * ``tilt_xy`` — combined tilt for a 3-D "perspective floor" look.
-    * ``scale_h`` / ``scale_v`` — horizontal / vertical squash. Affine.
-    * ``shear_x`` / ``shear_y`` — pure shear (parallelogram). Affine.
-    * ``cylinder_h`` — wraps the pattern around a horizontal cylinder.
-    * ``cylinder_v`` — wraps the pattern around a vertical cylinder.
-    * ``sphere`` — radial bend (fish-eye / dome look).
-    * ``ripple`` — sinusoidal wave displacement of x.
-    * ``twist`` — rotation about the layer centre, with the rotation angle
-      increasing with distance from the centre.
+    * ``scale_h`` — horizontal squash anchored at the centre. Useful
+      for the "wide-angle" look.
+    * ``scale_v`` — vertical squash anchored at the centre.
+    * ``shear_x`` — pure horizontal shear (parallelogram).
+    * ``shear_y`` — pure vertical shear (parallelogram).
+    * ``cylinder_h`` — wrapped around a horizontal cylinder.
+    * ``cylinder_v`` — wrapped around a vertical cylinder.
+    * ``sphere`` — radial bulge (dome / fish-eye look).
+    * ``ripple`` — sinusoidal wave displacement in x.
+    * ``twist`` — rotation about the layer centre, with the rotation
+      angle increasing with distance from the centre.
     """
 
     NONE = "none"
@@ -101,8 +105,8 @@ class WarpSpec:
     ``filter_id`` are ``""`` / ``None``.
 
     For non-affine warps: ``transform`` is ``""`` and the engine emits
-    ``filter_defs`` (containing the ``<filter id="...">`` block) once per
-    layer and references it via ``filter="url(#filter_id)"``.
+    ``filter_defs`` (containing the ``<filter id="...">`` block) once
+    per layer and references it via ``filter="url(#filter_id)"``.
     """
 
     transform: str = ""
@@ -134,179 +138,321 @@ def _safe_warp_id(kind: WarpKind) -> str:
 # ---------------------------------------------------------------------------
 # Affine warps
 # ---------------------------------------------------------------------------
+#
+# All affine warps below produce non-trivial matrices (non-zero off-diagonal
+# elements or non-uniform scaling) so they visibly change the pattern
+# rather than just translating or uniformly squashing it.
+#
+# The constants ``0.6`` and ``0.5`` are perceptual gains — without them,
+# ``strength=1`` would produce a very subtle effect on the standard
+# 1600x900 canvas because the canvas is much wider than tall.
+# Tweak them by visual feedback; the math itself is the standard
+# skew/affine.
 
 
 def _tilt_x_transform(width: float, height: float, s: float) -> str:
-    """Tilt around a horizontal axis: top of the layer recedes in x."""
-    e = s * (height / 2.0) * 0.4
-    return _matrix(1, 0, 0, 1, e, 0)
+    """Tilt around a horizontal axis via vertical-axis skew.
+
+    ``x' = x + s * 0.6 * (y - h/2)``
+    ``y' = y``
+
+    Top of the layer slides one way, bottom slides the other way. With
+    ``s=1`` the top and bottom shift by ±0.3*h user units in opposite
+    directions — a strong perspective tip.
+    """
+    c = s * 0.6
+    f = -c * height / 2.0
+    return _matrix(1, 0, c, 1, 0, f)
 
 
 def _tilt_y_transform(width: float, height: float, s: float) -> str:
-    """Tilt around a vertical axis: right of the layer recedes in y."""
-    f = s * (width / 2.0) * 0.4
-    return _matrix(1, 0, 0, 1, 0, f)
+    """Tilt around a vertical axis via horizontal-axis skew.
+
+    ``x' = x``
+    ``y' = y + s * 0.6 * (x - w/2)``
+    """
+    b = s * 0.6
+    e = -b * width / 2.0
+    return _matrix(1, b, 0, 1, e, 0)
 
 
 def _tilt_xy_transform(width: float, height: float, s: float) -> str:
-    """Combined tilt for a 3-D 'perspective floor' feel."""
-    e = s * (height / 2.0) * 0.3
-    f = s * (width / 2.0) * 0.3
-    return _matrix(1, 0, 0, 1, e, f)
+    """Combined tilt: both x-skew and y-skew at 70% of full strength.
+
+    Two skews combined give a 3-D "perspective floor" feel without
+    a 3-D matrix. Half-amplitude is enough — at full strength on both
+    axes the result reads as a different shape (parallelogram +
+    shear), not a tilt.
+    """
+    c = s * 0.6 * 0.7
+    f = -c * height / 2.0
+    b = s * 0.6 * 0.7
+    e = -b * width / 2.0
+    return _matrix(1, b, c, 1, e, f)
 
 
 def _scale_h_transform(width: float, height: float, s: float) -> str:
-    """Horizontal squash. ``s=1`` → half-width, ``s=-1`` → 1.5x width."""
+    """Non-uniform horizontal scaling anchored at the layer's centre.
+
+    At ``s=1`` the layer is half-width (anchored at the centre), so
+    the left and right edges pull toward the middle. This is a true
+    visible non-uniform scaling: vertical lines stay vertical but
+    become closer together.
+    """
     sx = 1.0 - 0.5 * s
-    e = (width - width * sx) / 2.0
+    e = width * (1.0 - sx) / 2.0
     return _matrix(sx, 0, 0, 1, e, 0)
 
 
 def _scale_v_transform(width: float, height: float, s: float) -> str:
-    """Vertical squash. ``s=1`` → half-height, ``s=-1`` → 1.5x height."""
+    """Non-uniform vertical scaling anchored at the layer's centre."""
     sy = 1.0 - 0.5 * s
-    f = (height - height * sy) / 2.0
+    f = height * (1.0 - sy) / 2.0
     return _matrix(1, 0, 0, sy, 0, f)
 
 
 def _shear_x_transform(width: float, height: float, s: float) -> str:
-    """Pure horizontal shear: top edge slides right as y decreases."""
-    return _matrix(1, 0, s * 0.4, 1, 0, 0)
+    """Pure horizontal shear: top edge slides right as y decreases.
+
+    ``x' = x + s * 0.5 * y``
+    """
+    c = s * 0.5
+    return _matrix(1, 0, c, 1, 0, 0)
 
 
 def _shear_y_transform(width: float, height: float, s: float) -> str:
-    """Pure vertical shear: left edge slides up as x increases."""
-    return _matrix(1, s * 0.4, 0, 1, 0, 0)
+    """Pure vertical shear: left edge slides up as x increases.
+
+    ``y' = y + s * 0.5 * x``
+    """
+    b = s * 0.5
+    return _matrix(1, b, 0, 1, 0, 0)
 
 
 # ---------------------------------------------------------------------------
-# Non-affine warps via <filter><feDisplacementMap/></filter>
+# Non-affine warps via <filter><feImage><feDisplacementMap/></filter>
 # ---------------------------------------------------------------------------
 #
-# How <feDisplacementMap> works: it samples a "displacement map" image
-# (which we build procedurally with <feTurbulence> + <feComponentTransfer>)
-# and offsets each pixel of the source by (scale_x * map_R, scale_y * map_G).
-# The scale_x/y attributes are in user units. We pick the scale so that
-# ``s=1`` produces a perceptible but not absurd warp.
-#
-# Trick: the geometric warps (cylinder, sphere, twist) need a *directional*
-# displacement that depends on the *destination* position. We synthesise
-# the gradient fields by chaining <feTurbulence> → <feColorMatrix> to
-# extract a single channel → <feComponentTransfer> to shape the function.
-# This is approximate but cheap, and for subtle warps (s << 1) the
-# approximation is visually indistinguishable from a true analytic warp.
+# Each non-affine warp generates a tiny PNG (1D ramp or small 2D field)
+# that encodes the per-pixel displacement (R = x displacement, G = y
+# displacement), with 0.5 meaning "no shift" and ±0.45 meaning "max
+# shift in that direction". The PNG is embedded as a data: URL inside
+# an <feImage>, then <feDisplacementMap> uses it as the in2 source.
+# The filter region is 150% of the layer (centered) so displaced
+# pixels aren't clipped at the edges.
 
 
-def _filter_defs(
-    kind: WarpKind,
-    *,
-    width: float,
-    height: float,
-    strength: float,
-) -> Tuple[str, str]:
+def _png_chunk(out: bytearray, typ: bytes, data: bytes) -> None:
+    out.extend(struct.pack(">I", len(data)))
+    out.extend(typ)
+    out.extend(data)
+    out.extend(struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+
+def _make_png_rgba(width: int, height: int, rgba: bytes) -> bytes:
+    """Build a minimal RGBA PNG from raw pixel bytes.
+
+    ``rgba`` is the row-major pixel data (no filter bytes). Each
+    output scanline is prefixed with a 0 filter byte ("None" filter
+    type) per the PNG spec. Many SVG renderers tolerate missing
+    filter bytes on 1-row PNGs but not on multi-row PNGs, so this
+    is important to get right.
+    """
+    row_bytes = width * 4
+    if len(rgba) != row_bytes * height:
+        raise ValueError(
+            f"rgba size mismatch: expected {row_bytes * height} bytes "
+            f"for {width}x{height} RGBA, got {len(rgba)}"
+        )
+    out = bytearray(b"\x89PNG\r\n\x1a\n")
+    _png_chunk(out, b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+    # Per the PNG spec, every scanline starts with a filter type byte.
+    # Filter type 0 = "None" (no filtering). We prepend 0 to every row.
+    raw = bytearray()
+    for j in range(height):
+        raw.append(0)
+        raw.extend(rgba[j * row_bytes : (j + 1) * row_bytes])
+    _png_chunk(out, b"IDAT", zlib.compress(bytes(raw), 9))
+    _png_chunk(out, b"IEND", b"")
+    return bytes(out)
+
+
+def _png_data_url(png: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+# Maximum channel deviation from 0.5. PNG encodes in [0.5 - amp, 0.5 + amp]
+# so the max displacement is amp * scale, where scale is the
+# feDisplacementMap scale attribute.
+_DISP_AMP = 0.45
+
+
+def _cylinder_h_png(height_norm: int = 48) -> bytes:
+    """Vertical 1D ramp (1 column, ``height_norm`` rows).
+
+    Encodes a horizontal-cylinder projection. y' = R*sin((y-cy)/R)
+    is approximated by a parabola: dy = -amp * (1 - y^2), which is
+    zero at the top and bottom and maximum inward at the centre.
+    dx is zero.
+    """
+    rgba = bytearray()
+    for j in range(height_norm):
+        y = j / max(height_norm - 1, 1) * 2.0 - 1.0
+        # Negative dy pushes pixels toward y=0 (the "equator" of the
+        # cylinder). With the filter's `scale`, the max dy is
+        # -amp * scale user units (inward at the centre).
+        dy = -_DISP_AMP * (1.0 - y * y)
+        r_chan = 0.5  # no x displacement
+        g_chan = 0.5 + dy
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(1, height_norm, bytes(rgba))
+
+
+def _cylinder_v_png(width_norm: int = 64) -> bytes:
+    """Horizontal 1D ramp (1 row, ``width_norm`` columns)."""
+    rgba = bytearray()
+    for i in range(width_norm):
+        x = i / max(width_norm - 1, 1) * 2.0 - 1.0
+        dx = -_DISP_AMP * (1.0 - x * x)
+        r_chan = 0.5 + dx
+        g_chan = 0.5
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(width_norm, 1, bytes(rgba))
+
+
+def _sphere_png(size: int = 32) -> bytes:
+    """2D radial bulge field.
+
+    The "dome" effect: pixels near the centre of the field are pushed
+    outward radially. A radial field: k(r) = 1 + (1 - r/R)^2 * 1.5
+    for r < R, k(r) = 1 otherwise. Displacement vector = (nx, ny) * (k-1)
+    where (nx, ny) are normalised coords in [-1, 1].
+    """
+    R = 0.7
+    rgba = bytearray()
+    pixels = []
+    for j in range(size):
+        for i in range(size):
+            x = i / max(size - 1, 1) * 2.0 - 1.0
+            y = j / max(size - 1, 1) * 2.0 - 1.0
+            r = math.sqrt(x * x + y * y)
+            if r >= R:
+                k = 1.0
+            else:
+                k = 1.0 + (1.0 - r / R) ** 2 * 1.5
+            dx = x * (k - 1.0)
+            dy = y * (k - 1.0)
+            pixels.append((dx, dy))
+    max_abs = max(max(abs(dx), abs(dy)) for dx, dy in pixels) or 1.0
+    for dx, dy in pixels:
+        r_chan = 0.5 + _DISP_AMP * dx / max_abs
+        g_chan = 0.5 + _DISP_AMP * dy / max_abs
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(size, size, bytes(rgba))
+
+
+def _ripple_png(width_norm: int = 64, cycles: int = 2) -> bytes:
+    """Horizontal 1D ramp: dx = sin(2*pi*cycles*x)."""
+    rgba = bytearray()
+    for i in range(width_norm):
+        x = i / max(width_norm - 1, 1)
+        v = math.sin(2.0 * math.pi * cycles * x)
+        r_chan = 0.5 + _DISP_AMP * v
+        g_chan = 0.5
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(width_norm, 1, bytes(rgba))
+
+
+def _twist_png(width: int = 32, height: int = 32) -> bytes:
+    """2D twist field. Rotation about (0, 0) in normalised coords.
+
+    theta = s * pi/2 * y_norm
+    (x', y') = rotate((x, y), theta)
+    dx = (cos-1)*x - sin*y
+    dy = sin*x + (cos-1)*y
+    """
+    rgba = bytearray()
+    pixels = []
+    for j in range(height):
+        for i in range(width):
+            x = i / max(width - 1, 1) * 2.0 - 1.0
+            y = j / max(height - 1, 1) * 2.0 - 1.0
+            theta = y * math.pi / 2.0
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            dx = (cos_t - 1.0) * x - sin_t * y
+            dy = sin_t * x + (cos_t - 1.0) * y
+            pixels.append((dx, dy))
+    max_abs = max(max(abs(dx), abs(dy)) for dx, dy in pixels) or 1.0
+    for dx, dy in pixels:
+        r_chan = 0.5 + _DISP_AMP * dx / max_abs
+        g_chan = 0.5 + _DISP_AMP * dy / max_abs
+        rgba.extend([
+            int(round(max(0, min(255, r_chan * 255)))),
+            int(round(max(0, min(255, g_chan * 255)))),
+            0, 255,
+        ])
+    return _make_png_rgba(width, height, bytes(rgba))
+
+
+# Maximum displacement in user units, used as the feDisplacementMap scale.
+# This is multiplied with the PNG channel value's deviation from 0.5
+# (max 0.45) to get the actual pixel shift in user units.
+def _filter_defs(kind: WarpKind, *, width: float, height: float, strength: float) -> tuple[str, str]:
     """Return ``(filter_id, filter_defs_string)`` for a non-affine warp.
 
-    The defs string is a ``<filter id="..."> ... </filter>`` block with no
-    leading whitespace, ready to be appended to a ``<defs>`` element.
+    ``scale`` is the maximum displacement in user units at
+    ``strength=1``. It's calibrated to the larger of width/height so
+    the effect scales with the layer size.
     """
     fid = _safe_warp_id(kind)
-    # Maximum pixel displacement at the layer's edge. Calibrated so that
-    # strength=1 gives a strongly perceptible warp without going off-canvas.
+    # Max displacement is 12% of the larger dimension, scaled by
+    # strength. With PNG amp=0.45, peak pixel shift = 0.45 * scale.
     base = max(width, height) * 0.12 * max(0.05, strength)
+    scale = base / _DISP_AMP  # so peak shift is `base` user units
+
     if kind == WarpKind.RIPPLE:
-        # Two waves across the layer, displaced in x. We use feTurbulence
-        # to get a noise field, then <feComponentTransfer><feFuncR> with a
-        # tabular ramp of cos samples to reshape it into a 1D cosine.
-        # That gives a horizontal sinusoidal displacement.
-        # The map's R channel drives x, G channel drives y (kept 0).
-        # feTurbulence produces RGB; we want a pure sinusoid in R.
-        N = 16  # samples for the cos table
-        table = []
-        for i in range(N):
-            x = i / (N - 1)
-            v = math.cos(2.0 * math.pi * 2.0 * x)  # 2 full cycles
-            # feFuncR table values are in [0, 1] but the *slope* is what
-            # matters for displacement; the absolute offset cancels.
-            table.append(f"{0.5 + 0.5 * v:.4f}")
-        ramp = " ".join(table)
-        defs = (
-            f'<filter id="{fid}" x="0" y="0" width="100%" height="100%" '
-            f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
-            f'<feTurbulence type="fractalNoise" baseFrequency="0.005 0.02" '
-            f'numOctaves="1" seed="1" result="noise"/>'
-            f'<feComponentTransfer in="noise" result="cosramp">'
-            f'<feFuncR type="table" tableValues="{ramp}"/>'
-            f'<feFuncG type="identity"/>'
-            f'<feFuncB type="identity"/>'
-            f'</feComponentTransfer>'
-            f'<feDisplacementMap in="SourceGraphic" in2="cosramp" '
-            f'scale="{base:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
-            f'</filter>'
-        )
+        png = _ripple_png()
     elif kind == WarpKind.TWIST:
-        # Twist: rotation increases with distance from centre. We
-        # synthesise a vector field where R and G channels encode the
-        # radial direction. Then feDisplacementMap pushes each pixel
-        # along that direction by an amount that grows with distance.
-        # We approximate via a linear gradient on the radial coordinate.
-        defs = (
-            f'<filter id="{fid}" x="-10%" y="-10%" width="120%" height="120%" '
-            f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
-            # feTurbulence gives us a noise field. We use it as a
-            # smooth source of values, then derive a radial signal
-            # via a coarse gradient. For twist, we approximate the
-            # rotation field by chaining two linear gradients that
-            # cross at the centre.
-            f'<feTurbulence type="fractalNoise" baseFrequency="0.012" '
-            f'numOctaves="1" seed="2" result="n"/>'
-            f'<feColorMatrix in="n" type="matrix" result="vec" '
-            f'values="0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0  0 0 0 0 1"/>'
-            f'<feDisplacementMap in="SourceGraphic" in2="vec" '
-            f'scale="{base:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
-            f'</filter>'
-        )
+        png = _twist_png()
     elif kind == WarpKind.SPHERE:
-        # Sphere: a strong central pinching. We use two superimposed
-        # gradients (radial) to create a bulge.
-        defs = (
-            f'<filter id="{fid}" x="-10%" y="-10%" width="120%" height="120%" '
-            f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
-            f'<feTurbulence type="fractalNoise" baseFrequency="0.01" '
-            f'numOctaves="1" seed="3" result="n"/>'
-            f'<feColorMatrix in="n" type="matrix" result="vec" '
-            f'values="0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0  0 0 0 0 1"/>'
-            f'<feDisplacementMap in="SourceGraphic" in2="vec" '
-            f'scale="{base:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
-            f'</filter>'
-        )
+        png = _sphere_png()
     elif kind == WarpKind.CYLINDER_H:
-        # Horizontal cylinder: x stays put, y gets a cos compression.
-        # We use a per-row gradient on Y, and zero on X.
-        defs = (
-            f'<filter id="{fid}" x="-5%" y="-5%" width="110%" height="110%" '
-            f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
-            f'<feTurbulence type="fractalNoise" baseFrequency="0.003 0.025" '
-            f'numOctaves="1" seed="4" result="n"/>'
-            f'<feColorMatrix in="n" type="matrix" result="vec" '
-            f'values="0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0  0 0 0 0 1"/>'
-            f'<feDisplacementMap in="SourceGraphic" in2="vec" '
-            f'scale="{base:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
-            f'</filter>'
-        )
+        png = _cylinder_h_png()
     elif kind == WarpKind.CYLINDER_V:
-        defs = (
-            f'<filter id="{fid}" x="-5%" y="-5%" width="110%" height="110%" '
-            f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
-            f'<feTurbulence type="fractalNoise" baseFrequency="0.025 0.003" '
-            f'numOctaves="1" seed="5" result="n"/>'
-            f'<feColorMatrix in="n" type="matrix" result="vec" '
-            f'values="0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0  0 0 0 0 1"/>'
-            f'<feDisplacementMap in="SourceGraphic" in2="vec" '
-            f'scale="{base:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
-            f'</filter>'
-        )
+        png = _cylinder_v_png()
     else:
         raise ValueError(f"unsupported non-affine warp: {kind}")
+
+    data_url = _png_data_url(png)
+    # Filter region: 50% padding on every side so displaced pixels
+    # aren't clipped. Pixels outside the layer's own rect are also
+    # drawn (they come from the source itself; the padding just lets
+    # them be visible after displacement).
+    defs = (
+        f'<filter id="{fid}" x="-25%" y="-25%" width="150%" height="150%" '
+        f'filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse">'
+        f'<feImage href="{data_url}" result="disp" preserveAspectRatio="none"/>'
+        f'<feDisplacementMap in="SourceGraphic" in2="disp" '
+        f'scale="{scale:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
+        f'</filter>'
+    )
     return fid, defs
 
 

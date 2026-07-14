@@ -215,26 +215,28 @@ Blend modes are applied per layer via `style="mix-blend-mode: …"` on the layer
 
 A *warp* bends a pattern layer onto a non-flat surface so the same flat-XY pattern can read as if it were projected onto a tilted plane, wrapped around a cylinder, rippled like water, twisted like a screw, or projected onto a sphere.
 
-* **Affine** warps (`tilt_x`, `tilt_y`, `tilt_xy`, `scale_h`, `scale_v`, `shear_x`, `shear_y`) emit a single `<g transform="matrix(...)">`. They are zero-overhead and deterministic.
-* **Non-affine** warps (`cylinder_h`, `cylinder_v`, `sphere`, `ripple`, `twist`) emit a single `<defs>` block per warp with a `<filter>` containing `<feTurbulence>` and `<feDisplacementMap>`. The layer's `<g>` references it via `filter="url(#sp-warp-...)"`. This is the standard SVG idiom for non-affine spatial warps and is supported in every modern browser.
+* **Affine** warps (`tilt_x`, `tilt_y`, `tilt_xy`, `scale_h`, `scale_v`, `shear_x`, `shear_y`) emit a single `<g transform="matrix(...)">`. The matrix is a true affine transform (real skew, non-uniform scaling, or real shear) so it visibly changes the pattern. Zero overhead, deterministic, and works in every renderer that supports SVG.
+* **Non-affine** warps (`cylinder_h`, `cylinder_v`, `sphere`, `ripple`, `twist`) emit a single `<defs>` block per warp with a `<filter>` containing a tiny precomputed displacement-map PNG as `<feImage>` + `<feDisplacementMap>`. The PNG is generated at render time from the analytic displacement field (sinusoidal ramp for ripple, parabolic for the cylinders, radial for sphere, rotation for twist) and embedded as a data: URL. The filter region is 150% of the layer so displaced pixels aren't clipped at the edges. This is the standard SVG idiom for non-affine warps and is supported in every modern browser.
 
 `warp_strength` is in `[0, 1]`. `0` is the identity (no transform emitted). `1` is a strong, easily visible warp.
 
-| Warp           | Kind          | Looks like                                       |
-|----------------|---------------|--------------------------------------------------|
-| `none`         | identity      | No change                                        |
-| `tilt_x`       | affine        | Pattern tipped around a horizontal axis          |
-| `tilt_y`       | affine        | Pattern tipped around a vertical axis            |
-| `tilt_xy`      | affine        | 3-D "perspective floor" combined tilt            |
-| `scale_h`      | affine        | Horizontal squash (1 = half-width)               |
-| `scale_v`      | affine        | Vertical squash (1 = half-height)                |
-| `shear_x`      | affine        | Horizontal shear (parallelogram)                 |
-| `shear_y`      | affine        | Vertical shear (parallelogram)                   |
-| `cylinder_h`   | non-affine    | Wrapped around a horizontal cylinder             |
-| `cylinder_v`   | non-affine    | Wrapped around a vertical cylinder               |
-| `sphere`       | non-affine    | Projected onto a sphere (fish-eye / dome)        |
-| `ripple`       | non-affine    | Sinusoidal wave displacement                     |
-| `twist`        | non-affine    | Rotation around centre, increasing with distance |
+| Warp           | Kind          | Math (sketch)                                                                 | Looks like                                       |
+|----------------|---------------|-------------------------------------------------------------------------------|--------------------------------------------------|
+| `none`         | identity      | —                                                                             | No change                                        |
+| `tilt_x`       | affine        | `x' = x + 0.6·s·(y − h/2)` — vertical-axis skew                               | Pattern tipped around a horizontal axis          |
+| `tilt_y`       | affine        | `y' = y + 0.6·s·(x − w/2)` — horizontal-axis skew                             | Pattern tipped around a vertical axis            |
+| `tilt_xy`      | affine        | Combined tilt (both axes at 70% of full strength)                            | 3-D "perspective floor" combined tilt            |
+| `scale_h`      | affine        | `x' = sx·x` with `sx = 1 − 0.5·s`, anchored at centre                         | Horizontal squash (1 = half-width)               |
+| `scale_v`      | affine        | `y' = sy·y` with `sy = 1 − 0.5·s`, anchored at centre                         | Vertical squash (1 = half-height)                |
+| `shear_x`      | affine        | `x' = x + 0.5·s·y` — pure horizontal shear                                    | Horizontal shear (parallelogram)                 |
+| `shear_y`      | affine        | `y' = y + 0.5·s·x` — pure vertical shear                                      | Vertical shear (parallelogram)                   |
+| `cylinder_h`   | non-affine    | `dy = −(1 − y²)` parabolic ramp, scaled by `0.12·max(w,h)·s`                  | Wrapped around a horizontal cylinder             |
+| `cylinder_v`   | non-affine    | `dx = −(1 − x²)` parabolic ramp, scaled by `0.12·max(w,h)·s`                  | Wrapped around a vertical cylinder               |
+| `sphere`       | non-affine    | Radial bulge: outward push that increases toward the centre                   | Projected onto a sphere (fish-eye / dome)        |
+| `ripple`       | non-affine    | `dx = sin(2π·2·x)` sinusoidal ramp, scaled by `0.12·max(w,h)·s`               | Sinusoidal wave displacement                     |
+| `twist`        | non-affine    | Rotation by `y·π/2` about the centre, with smooth interpolation               | Rotation around centre, increasing with distance |
+
+All non-affine warps use the same per-pixel scale formula: the maximum displacement in user units is `0.12·max(w, h)·s`, where `s` is `warp_strength`. With `s=0.5` on a 1600×900 layer, the peak displacement is `0.12·1600·0.5 = 96` user units — a clearly visible bend without pushing content off-canvas.
 
 Example — a 2-layer overlay where the grid is bent onto a perspective floor and the dot grid is not:
 
@@ -254,7 +256,7 @@ layers:
     # no warp: stays on the unwarped plane
 ```
 
-Five presets exercise the warps: `tilted_grid`, `cylindrical_blueprint`, `ripple_field`, `twisted_ribbon`, `dome_horizon`.
+Five presets exercise the warps: `tilted_grid`, `cylindrical_blueprint`, `ripple_field`, `twisted_ribbon`, `dome_horizon`. Samples 11–15 and 21–24 in `examples/samples/preview.html` showcase them on different pattern families.
 
 ## Built-in presets
 

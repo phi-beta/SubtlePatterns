@@ -123,6 +123,184 @@ class TestComputeWarp:
         b = compute_warp(WarpKind.TWIST, width=800, height=600, strength=0.5)
         assert a.filter_id != b.filter_id
 
+    def test_all_warps_produce_different_filter_defs(self):
+        """Regression: the 5 non-affine warps must produce *visibly
+        different* displacement fields. If they all produce the same
+        bytes, every warp will render identically in the browser.
+        """
+        kinds = [WarpKind.RIPPLE, WarpKind.TWIST, WarpKind.SPHERE,
+                 WarpKind.CYLINDER_H, WarpKind.CYLINDER_V]
+        defs = {k: compute_warp(k, width=800, height=600, strength=0.5).filter_defs
+                for k in kinds}
+        for a in kinds:
+            for b in kinds:
+                if a >= b: continue
+                assert defs[a] != defs[b], (
+                    f"{a.value} and {b.value} produce identical filter defs"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Non-affine PNG generation: correctness regression tests
+# ---------------------------------------------------------------------------
+
+class TestNonAffinePngs:
+    """Regression tests for the displacement-map PNGs.
+
+    An earlier bug had the PNG IDAT stream missing per-row filter
+    bytes. PNG decoders tolerate this on 1-row PNGs but produce a
+    garbled image on multi-row PNGs (sphere, twist), which made
+    every non-affine warp produce the same output. These tests
+    catch the regression by decoding the PNGs back to raw RGBA
+    bytes and asserting that the fields are non-trivial.
+    """
+
+    @staticmethod
+    def _decode_png_rgba(png: bytes) -> tuple:
+        """Decode a minimal RGBA PNG back to (width, height, raw_rgba).
+
+        Expects the PNG to follow the spec: each scanline prefixed
+        with a 0 filter byte.
+        """
+        import struct
+        import zlib
+        data = png[8:]
+        width = height = 0
+        idat = bytearray()
+        while data:
+            length = struct.unpack(">I", data[:4])[0]
+            typ = data[4:8]
+            chunk = data[8:8 + length]
+            data = data[8 + length + 4:]
+            if typ == b"IHDR":
+                width, height, _bd, _ct = struct.unpack(">IIBB", chunk[:10])
+            elif typ == b"IDAT":
+                idat.extend(chunk)
+        decompressed = zlib.decompress(bytes(idat))
+        row_bytes = width * 4
+        raw = bytearray()
+        for j in range(height):
+            start = j * (1 + row_bytes) + 1  # +1 to skip filter byte
+            raw.extend(decompressed[start:start + row_bytes])
+        return width, height, bytes(raw)
+
+    def test_ripple_png_is_multicoloured(self):
+        from subtle_patterns.core.warp import _ripple_png
+        w, h, raw = self._decode_png_rgba(_ripple_png())
+        assert (w, h) == (64, 1)
+        r_values = {raw[i * 4] for i in range(w)}
+        assert len(r_values) >= 16, f"ripple R has only {len(r_values)} distinct values"
+        assert max(r_values) - min(r_values) >= 100
+
+    def test_twist_png_has_2d_variation(self):
+        from subtle_patterns.core.warp import _twist_png
+        w, h, raw = self._decode_png_rgba(_twist_png())
+        assert (w, h) == (32, 32)
+        # y-variation: G changes row-to-row
+        g_first = [raw[i * 4 + 1] for i in range(w)]
+        g_last = [raw[(h - 1) * w * 4 + i * 4 + 1] for i in range(w)]
+        assert g_first != g_last, "twist PNG has no y-variation"
+        # x-variation: G changes column-to-column within a row
+        first_col = [raw[j * w * 4 + 1] for j in range(h)]
+        last_col = [raw[j * w * 4 + (w - 1) * 4 + 1] for j in range(h)]
+        assert first_col != last_col, "twist PNG has no x-variation"
+
+    def test_sphere_png_has_radial_variation(self):
+        from subtle_patterns.core.warp import _sphere_png
+        w, h, raw = self._decode_png_rgba(_sphere_png())
+        assert (w, h) == (32, 32)
+        r_values = {raw[i * 4] for i in range(w * h)}
+        g_values = {raw[i * 4 + 1] for i in range(w * h)}
+        assert len(r_values) >= 8, f"sphere R has only {len(r_values)} distinct values"
+        assert len(g_values) >= 8, f"sphere G has only {len(g_values)} distinct values"
+        assert max(r_values) - min(r_values) >= 50
+        assert max(g_values) - min(g_values) >= 50
+
+    def test_cylinder_h_png_varies_along_y(self):
+        from subtle_patterns.core.warp import _cylinder_h_png
+        w, h, raw = self._decode_png_rgba(_cylinder_h_png())
+        assert (w, h) == (1, 48)
+        g_values = [raw[j * 4 + 1] for j in range(h)]
+        # The cylinder_h field is a parabola: max deviation at the
+        # centre, zero at the edges. So first/last rows match but the
+        # centre should differ from the edges.
+        assert len(set(g_values)) >= 16, "cylinder_h G channel is too uniform"
+        centre = h // 2
+        assert abs(g_values[centre] - g_values[0]) >= 50, (
+            f"cylinder_h centre-to-edge variation = {abs(g_values[centre] - g_values[0])}"
+        )
+
+    def test_cylinder_v_png_varies_along_x(self):
+        from subtle_patterns.core.warp import _cylinder_v_png
+        w, h, raw = self._decode_png_rgba(_cylinder_v_png())
+        assert (w, h) == (64, 1)
+        r_values = [raw[i * 4] for i in range(w)]
+        assert len(set(r_values)) >= 16, "cylinder_v R channel is too uniform"
+
+    def test_all_non_affine_pngs_are_distinct(self):
+        """A critical regression: the 5 non-affine warps must produce
+        distinct PNG bytes. If they don't, every warp will produce
+        the same visual output.
+        """
+        from subtle_patterns.core.warp import (
+            _ripple_png, _twist_png, _sphere_png,
+            _cylinder_h_png, _cylinder_v_png,
+        )
+        pngs = {
+            "ripple": _ripple_png(),
+            "twist": _twist_png(),
+            "sphere": _sphere_png(),
+            "cylinder_h": _cylinder_h_png(),
+            "cylinder_v": _cylinder_v_png(),
+        }
+        for a_name, a_png in pngs.items():
+            for b_name, b_png in pngs.items():
+                if a_name >= b_name:
+                    continue
+                assert a_png != b_png, (
+                    f"{a_name} and {b_name} PNGs are byte-identical; "
+                    "the corresponding warps will produce the same output"
+                )
+
+    def test_pngs_have_correct_filter_bytes(self):
+        """Each scanline must be prefixed with a 0 filter byte.
+
+        A missing filter byte was the root cause of an earlier bug
+        where every non-affine warp produced identical output.
+        """
+        import struct
+        import zlib
+        from subtle_patterns.core.warp import (
+            _ripple_png, _twist_png, _sphere_png,
+            _cylinder_h_png, _cylinder_v_png,
+        )
+        for png_name, png_bytes in [
+            ("ripple", _ripple_png()),
+            ("twist", _twist_png()),
+            ("sphere", _sphere_png()),
+            ("cylinder_h", _cylinder_h_png()),
+            ("cylinder_v", _cylinder_v_png()),
+        ]:
+            data = png_bytes[8:]
+            width = height = 0
+            idat = bytearray()
+            while data:
+                length = struct.unpack(">I", data[:4])[0]
+                typ = data[4:8]
+                chunk = data[8:8 + length]
+                data = data[8 + length + 4:]
+                if typ == b"IHDR":
+                    width, height = struct.unpack(">II", chunk[:8])
+                elif typ == b"IDAT":
+                    idat.extend(chunk)
+            raw = zlib.decompress(bytes(idat))
+            row_bytes = width * 4
+            expected = height * (1 + row_bytes)
+            assert len(raw) == expected, (
+                f"{png_name}: IDAT has {len(raw)} bytes, expected {expected} "
+                f"({height} rows × (1 filter byte + {row_bytes} RGBA bytes))"
+            )
+
 
 # ---------------------------------------------------------------------------
 # PatternConfig integration
